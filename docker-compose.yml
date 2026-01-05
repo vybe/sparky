@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  dgx-web-ui:
+    build: .
+    image: dgx-web-ui:latest
+    container_name: dgx-web-ui
+    restart: unless-stopped
+    ports:
+      - "3080:80"
+    volumes:
+      - ./config.js:/usr/share/nginx/html/config.js:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - dgx-api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - dgx-network
+
+  dgx-api:
+    build: ./backend
+    image: dgx-api:latest
+    container_name: dgx-api
+    restart: unless-stopped
+    # Run as eugene user (not root) so Claude Code allows --dangerously-skip-permissions
+    user: "1000:1000"
+    group_add:
+      - "988"  # docker group for socket access
+    # Access host process namespace to manage Ollama
+    pid: host
+    ports:
+      - "3081:8080"
+    volumes:
+      # Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Home directory (includes Claude Code, config, and working directories)
+      - /home/eugene:/home/eugene
+    working_dir: /home/eugene
+    # Override command to use absolute path since working_dir changed
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--app-dir", "/app"]
+    # Access to nvidia-smi on host
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HOME=/home/eugene
+      - USER=eugene
+      - PATH=/home/eugene/.local/bin:/usr/local/bin:/usr/bin:/bin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - dgx-network
+
+networks:
+  dgx-network:
+    driver: bridge

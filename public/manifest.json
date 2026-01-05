@@ -1,0 +1,37 @@
+{
+  "name": "Sparky - NVidia DGX Spark instance",
+  "short_name": "Sparky",
+  "description": "Control your DGX Spark - Chat, Image & Video Generation",
+  "start_url": "/?mobile=1",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "shortcuts": [
+    {
+      "name": "Chat",
+      "url": "/?mobile=1&tab=chat",
+      "description": "Chat with AI models"
+    },
+    {
+      "name": "Generate Image",
+      "url": "/?mobile=1&tab=image",
+      "description": "Generate images with AI"
+    }
+  ]
+}

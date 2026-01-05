@@ -1,0 +1,71 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+deploy.sh
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build artifacts
+dist/
+build/
+
+# Testing
+coverage/
+*.coverage
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Sessions and temporary files
+*.sessions.json
+.dgx-web-ui-sessions.json
+
+# Deployment-specific files
+config.dgx.js
+
+# Documentation that might contain sensitive info
+DEPLOYMENT_TEST_REPORT.md
+
+# Additional private files
+*.private
+*.old
+*.bak
+.gitignore.clean
+.gitignore.old
+README.clean.md
+src/constants/mobileConstants.clean.js
+REFACTORING_SUMMARY.md
+CLAUDE.md
+deploy.sh
+README.md
+src/constants/mobileConstants.js
