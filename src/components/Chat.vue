@@ -189,12 +189,18 @@ async function handleSend() {
         @keydown.enter.exact.prevent="handleSend"
         placeholder="Type a message... (Enter to send)"
         rows="2"
-        class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500"
+        inputmode="text"
+        autocomplete="off"
+        autocorrect="on"
+        autocapitalize="sentences"
+        spellcheck="true"
+        class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500 text-base touch-manipulation"
+        style="font-size: 16px;"
       ></textarea>
       <button
         @click="handleSend"
         :disabled="chatLoading || !chatInput.trim() || !isModelLoaded(selectedChatModel)"
-        class="px-6 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+        class="px-6 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors touch-manipulation"
         title="Send message (model must be loaded first)"
       >
         {{ chatLoading ? '...' : 'Send' }}

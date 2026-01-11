@@ -45,11 +45,15 @@ services:
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--app-dir", "/app"]
     # Access to nvidia-smi on host
     runtime: nvidia
+    # Allow container to reach host services (Ollama)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - HOME=/home/eugene
       - USER=eugene
       - PATH=/home/eugene/.local/bin:/usr/local/bin:/usr/bin:/bin
+      - OLLAMA_HOST=http://host.docker.internal:11434
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

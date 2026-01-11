@@ -8,6 +8,7 @@ import VoiceChat from './components/VoiceChat.vue'
 import ActivityMonitor from './components/ActivityMonitor.vue'
 import Management from './components/Management.vue'
 import AgentChat from './components/AgentChat.vue'
+import GooseChat from './components/GooseChat.vue'
 import Mobile from './components/Mobile.vue'
 
 // Check if mobile mode is requested via URL param or if on small screen
@@ -26,6 +27,7 @@ const activeTab = ref('dashboard')
 const tabs = [
   { id: 'dashboard', name: 'Overview', icon: '⚡' },
   { id: 'agent', name: 'Agent', icon: '🤖' },
+  { id: 'goose', name: 'Research', icon: '🪿' },
   { id: 'chat', name: 'Chat', icon: '💬' },
   { id: 'image', name: 'Image Gen', icon: '🎨' },
   { id: 'video', name: 'Video Gen', icon: '🎬' },
@@ -98,15 +100,32 @@ function toggleMode() {
       </div>
     </nav>
 
-    <!-- Content -->
+    <!-- Content - keep-alive preserves component state when switching tabs -->
     <main class="max-w-7xl mx-auto p-6">
-      <Dashboard v-if="activeTab === 'dashboard'" />
-      <AgentChat v-if="activeTab === 'agent'" />
-      <ImageGenerator v-if="activeTab === 'image'" />
-      <VideoGenerator v-if="activeTab === 'video'" />
-      <Chat v-if="activeTab === 'chat'" />
-      <VoiceChat v-if="activeTab === 'voice'" />
-      <Management v-if="activeTab === 'manage'" />
+      <keep-alive>
+        <Dashboard v-if="activeTab === 'dashboard'" />
+      </keep-alive>
+      <keep-alive>
+        <AgentChat v-if="activeTab === 'agent'" />
+      </keep-alive>
+      <keep-alive>
+        <GooseChat v-if="activeTab === 'goose'" />
+      </keep-alive>
+      <keep-alive>
+        <ImageGenerator v-if="activeTab === 'image'" />
+      </keep-alive>
+      <keep-alive>
+        <VideoGenerator v-if="activeTab === 'video'" />
+      </keep-alive>
+      <keep-alive>
+        <Chat v-if="activeTab === 'chat'" />
+      </keep-alive>
+      <keep-alive>
+        <VoiceChat v-if="activeTab === 'voice'" />
+      </keep-alive>
+      <keep-alive>
+        <Management v-if="activeTab === 'manage'" />
+      </keep-alive>
     </main>
   </div>
 </template>

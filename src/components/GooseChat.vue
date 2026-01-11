@@ -5,97 +5,74 @@ import { ref, nextTick, onMounted } from 'vue'
 const messages = ref([])
 const inputMessage = ref('')
 const isLoading = ref(false)
-const sessionId = ref(null)
-const claudeStatus = ref(null)
-const totalCost = ref(0)
+const gooseStatus = ref(null)
 const chatContainer = ref(null)
 
-// Session management
-const savedSessions = ref([])
-const showSessionPicker = ref(false)
-const sessionName = ref('')
+// Research files management
+const savedResearch = ref([])
+const showResearchPanel = ref(false)
+const selectedResearch = ref(null)
 
-// Tool presets for common operations
-const toolPresets = [
-  { name: 'Full Access', tools: null, desc: 'All tools enabled' },
-  { name: 'Read Only', tools: ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)'], desc: 'Can only read files' },
-  { name: 'Safe Bash', tools: ['Bash', 'Read', 'Write', 'Edit'], desc: 'Shell + file operations' },
-  { name: 'Research', tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'], desc: 'Search and read only' },
+// Mode: 'chat' for quick queries, 'research' for full research agent
+const researchMode = ref('chat')
+const modes = [
+  { id: 'chat', name: 'Quick Chat', desc: 'Fast Q&A with web search' },
+  { id: 'research', name: 'Deep Research', desc: 'Full research with saved notes' },
 ]
-const selectedPreset = ref(toolPresets[0])
 
-// Check Claude Code status
+// Check Goose status
 async function checkStatus() {
   try {
-    const res = await fetch('/api/claude/status')
-    claudeStatus.value = await res.json()
+    const res = await fetch('/api/goose/status')
+    gooseStatus.value = await res.json()
   } catch (e) {
-    claudeStatus.value = { available: false, error: e.message }
+    gooseStatus.value = { available: false, error: e.message }
   }
 }
 
-// Load saved sessions
-async function loadSessions() {
+// Load saved research files
+async function loadResearch() {
   try {
-    const res = await fetch('/api/claude/sessions')
+    const res = await fetch('/api/goose/research')
     const data = await res.json()
-    savedSessions.value = data.sessions || []
+    savedResearch.value = data.files || []
   } catch (e) {
-    console.error('Failed to load sessions:', e)
+    console.error('Failed to load research:', e)
   }
 }
 
-// Save current session
-async function saveCurrentSession() {
-  if (!sessionId.value) return
-
-  const name = sessionName.value.trim() || `Session ${new Date().toLocaleString()}`
-  const firstMsg = messages.value.find(m => m.role === 'user')?.content || ''
-
+// View a research file
+async function viewResearch(file) {
   try {
-    await fetch('/api/claude/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId.value,
-        name: name,
-        first_message: firstMsg.slice(0, 100)
-      })
-    })
-    sessionName.value = name
-    await loadSessions()
+    const res = await fetch(`/api/goose/research/${encodeURIComponent(file.name)}`)
+    const data = await res.json()
+    selectedResearch.value = { ...file, content: data.content }
   } catch (e) {
-    console.error('Failed to save session:', e)
+    console.error('Failed to load research file:', e)
   }
 }
 
-// Load a saved session
-async function loadSession(session) {
-  sessionId.value = session.session_id
-  sessionName.value = session.name
-  messages.value = []
-  totalCost.value = 0
-  showSessionPicker.value = false
-
-  // Add a system message indicating we resumed
-  messages.value.push({
-    role: 'assistant',
-    content: `📂 Resumed session: "${session.name}"\n\nOriginal prompt: ${session.first_message || '(none saved)'}\n\nYou can continue the conversation - Claude will remember the context.`,
-    isSystem: true
-  })
-}
-
-// Delete a saved session
-async function deleteSession(session, event) {
+// Delete a research file
+async function deleteResearch(file, event) {
   event.stopPropagation()
-  if (!confirm(`Delete session "${session.name}"?`)) return
+  if (!confirm(`Delete "${file.name}"?`)) return
 
   try {
-    await fetch(`/api/claude/sessions/${session.session_id}`, { method: 'DELETE' })
-    await loadSessions()
+    await fetch(`/api/goose/research/${encodeURIComponent(file.name)}`, { method: 'DELETE' })
+    await loadResearch()
+    if (selectedResearch.value?.name === file.name) {
+      selectedResearch.value = null
+    }
   } catch (e) {
-    console.error('Failed to delete session:', e)
+    console.error('Failed to delete research:', e)
   }
+}
+
+// Format file size
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // Format relative time
@@ -125,7 +102,7 @@ async function sendMessage() {
   messages.value.push({ role: 'user', content: userMessage })
 
   // Add placeholder for assistant
-  messages.value.push({ role: 'assistant', content: '', loading: true })
+  messages.value.push({ role: 'assistant', content: '', loading: true, sources: [] })
   await scrollToBottom()
 
   isLoading.value = true
@@ -133,11 +110,10 @@ async function sendMessage() {
   try {
     const payload = {
       message: userMessage,
-      session_id: sessionId.value,
-      allowed_tools: selectedPreset.value.tools
+      mode: researchMode.value
     }
 
-    const res = await fetch('/api/claude/chat', {
+    const res = await fetch('/api/goose/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -155,18 +131,12 @@ async function sendMessage() {
     lastMsg.loading = false
     lastMsg.content = data.result
     lastMsg.duration = data.duration_ms
-    lastMsg.cost = data.cost_usd
+    lastMsg.sources = data.sources || []
+    lastMsg.saved_file = data.saved_file
 
-    // Track session and cost
-    const isNewSession = !sessionId.value && data.session_id
-    if (data.session_id) {
-      sessionId.value = data.session_id
-    }
-    totalCost.value += data.cost_usd || 0
-
-    // Auto-save new sessions
-    if (isNewSession) {
-      await saveCurrentSession()
+    // Refresh research files if something was saved
+    if (data.saved_file) {
+      await loadResearch()
     }
 
     await scrollToBottom()
@@ -190,52 +160,58 @@ async function scrollToBottom() {
 
 function clearChat() {
   messages.value = []
-  sessionId.value = null
-  sessionName.value = ''
-  totalCost.value = 0
+  selectedResearch.value = null
 }
 
 function formatDuration(ms) {
   if (!ms) return ''
   if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 60000).toFixed(1)}m`
 }
 
-function formatCost(usd) {
-  if (!usd) return ''
-  return `$${usd.toFixed(4)}`
+// Insert research topic into input
+function insertTopic(topic) {
+  inputMessage.value = topic
+}
+
+// Safely extract hostname from URL
+function getHostname(url) {
+  try {
+    return new URL(url).hostname
+  } catch {
+    // If URL is malformed, just show a truncated version
+    return url.length > 30 ? url.slice(0, 30) + '...' : url
+  }
 }
 
 onMounted(() => {
   checkStatus()
-  loadSessions()
+  loadResearch()
 })
 </script>
 
 <template>
-  <div class="agent-chat">
+  <div class="goose-chat">
     <!-- Header -->
     <div class="chat-header">
       <div class="header-left">
-        <h2 class="text-lg font-semibold">Claude Code Agent</h2>
-        <div v-if="claudeStatus" class="status-indicator">
-          <span v-if="claudeStatus.available" class="status-dot online"></span>
+        <h2 class="text-lg font-semibold">Goose Research Agent</h2>
+        <div v-if="gooseStatus" class="status-indicator">
+          <span v-if="gooseStatus.available" class="status-dot online"></span>
           <span v-else class="status-dot offline"></span>
           <span class="text-xs text-gray-400">
-            {{ claudeStatus.available ? claudeStatus.version : 'Offline' }}
+            {{ gooseStatus.available ? gooseStatus.version : 'Offline' }}
           </span>
         </div>
       </div>
       <div class="header-right">
-        <div class="cost-display" v-if="totalCost > 0">
-          Session: {{ formatCost(totalCost) }}
-        </div>
-        <button @click="showSessionPicker = !showSessionPicker" class="btn-sessions" title="Load saved session">
-          📂 Sessions
-          <span v-if="savedSessions.length" class="session-count">{{ savedSessions.length }}</span>
+        <button @click="showResearchPanel = !showResearchPanel" class="btn-research" title="View saved research">
+          📚 Research
+          <span v-if="savedResearch.length" class="research-count">{{ savedResearch.length }}</span>
         </button>
-        <select v-model="selectedPreset" class="preset-select">
-          <option v-for="p in toolPresets" :key="p.name" :value="p">{{ p.name }}</option>
+        <select v-model="researchMode" class="mode-select">
+          <option v-for="m in modes" :key="m.id" :value="m.id">{{ m.name }}</option>
         </select>
         <button @click="clearChat" class="btn-clear" title="New chat">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -245,45 +221,50 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Preset description -->
-    <div class="preset-info">
-      <span class="text-xs text-gray-500">{{ selectedPreset.desc }}</span>
-      <div v-if="sessionId" class="session-info">
-        <input
-          v-model="sessionName"
-          @blur="saveCurrentSession"
-          @keydown.enter="$event.target.blur()"
-          class="session-name-input"
-          placeholder="Name this session..."
-        />
-        <span class="session-id">{{ sessionId.slice(0, 8) }}</span>
-      </div>
+    <!-- Mode description -->
+    <div class="mode-info">
+      <span class="text-xs text-gray-500">{{ modes.find(m => m.id === researchMode)?.desc }}</span>
+      <span class="text-xs text-gray-600">Model: qwen3:30b-a3b</span>
     </div>
 
-    <!-- Session Picker -->
-    <div v-if="showSessionPicker" class="session-picker">
-      <div class="session-picker-header">
-        <span>Saved Sessions</span>
-        <button @click="showSessionPicker = false" class="close-btn">×</button>
+    <!-- Research Panel -->
+    <div v-if="showResearchPanel" class="research-panel">
+      <div class="research-panel-header">
+        <span>Saved Research</span>
+        <button @click="showResearchPanel = false" class="close-btn">×</button>
       </div>
-      <div v-if="savedSessions.length === 0" class="no-sessions">
-        No saved sessions yet. Start a chat to create one.
-      </div>
-      <div v-else class="session-list">
-        <div
-          v-for="session in savedSessions"
-          :key="session.session_id"
-          @click="loadSession(session)"
-          class="session-item"
-          :class="{ active: session.session_id === sessionId }"
-        >
-          <div class="session-item-main">
-            <div class="session-item-name">{{ session.name }}</div>
-            <div class="session-item-preview">{{ session.first_message || '(no preview)' }}</div>
+
+      <div class="research-panel-content">
+        <!-- File List -->
+        <div class="research-list">
+          <div v-if="savedResearch.length === 0" class="no-research">
+            No saved research yet. Use "Deep Research" mode to save findings.
           </div>
-          <div class="session-item-meta">
-            <span class="session-item-time">{{ formatRelativeTime(session.updated_at) }}</span>
-            <button @click="deleteSession(session, $event)" class="session-delete-btn" title="Delete">×</button>
+          <div
+            v-for="file in savedResearch"
+            :key="file.name"
+            @click="viewResearch(file)"
+            class="research-item"
+            :class="{ active: selectedResearch?.name === file.name }"
+          >
+            <div class="research-item-main">
+              <div class="research-item-name">{{ file.name.replace('.md', '') }}</div>
+              <div class="research-item-meta">
+                <span>{{ formatSize(file.size) }}</span>
+                <span>{{ formatRelativeTime(file.modified) }}</span>
+              </div>
+            </div>
+            <button @click="deleteResearch(file, $event)" class="research-delete-btn" title="Delete">×</button>
+          </div>
+        </div>
+
+        <!-- File Preview -->
+        <div v-if="selectedResearch" class="research-preview">
+          <div class="research-preview-header">
+            <span class="font-medium">{{ selectedResearch.name }}</span>
+          </div>
+          <div class="research-preview-content">
+            <pre>{{ selectedResearch.content }}</pre>
           </div>
         </div>
       </div>
@@ -292,21 +273,21 @@ onMounted(() => {
     <!-- Messages -->
     <div ref="chatContainer" class="messages-container">
       <div v-if="messages.length === 0" class="empty-state">
-        <div class="empty-icon">🤖</div>
-        <div class="empty-title">Claude Code Agent</div>
+        <div class="empty-icon">🪿</div>
+        <div class="empty-title">Goose Research Agent</div>
         <div class="empty-desc">
-          Send commands to Claude Code running on DGX.<br>
-          It has full access to manage the system.
+          Ask questions about any topic. Goose will search the web,<br>
+          gather information, and synthesize findings for you.
         </div>
         <div class="example-prompts">
-          <button @click="inputMessage = 'What containers are running?'" class="example-btn">
-            What containers are running?
+          <button @click="insertTopic('What are the latest developments in AI agents?')" class="example-btn">
+            Latest AI agent developments
           </button>
-          <button @click="inputMessage = 'Show GPU and memory usage'" class="example-btn">
-            Show GPU and memory usage
+          <button @click="insertTopic('Compare different local LLM frameworks')" class="example-btn">
+            Compare local LLM frameworks
           </button>
-          <button @click="inputMessage = 'List files in ~/video-generation/'" class="example-btn">
-            List files in ~/video-generation/
+          <button @click="insertTopic('Research MCP (Model Context Protocol) architecture')" class="example-btn">
+            Research MCP architecture
           </button>
         </div>
       </div>
@@ -317,14 +298,35 @@ onMounted(() => {
             <div class="typing-dots">
               <span></span><span></span><span></span>
             </div>
-            <span class="text-xs text-gray-500 ml-2">Thinking...</span>
+            <span class="text-xs text-gray-500 ml-2">Researching...</span>
           </div>
           <div v-else class="message-text" :class="{ 'error': msg.isError }">
             <pre>{{ msg.content }}</pre>
           </div>
-          <div v-if="msg.role === 'assistant' && !msg.loading && (msg.duration || msg.cost)" class="message-meta">
-            <span v-if="msg.duration">{{ formatDuration(msg.duration) }}</span>
-            <span v-if="msg.cost">{{ formatCost(msg.cost) }}</span>
+
+          <!-- Sources -->
+          <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
+            <span class="sources-label">Sources:</span>
+            <div class="sources-list">
+              <a
+                v-for="(source, sidx) in msg.sources"
+                :key="sidx"
+                :href="source"
+                target="_blank"
+                class="source-link"
+              >
+                {{ getHostname(source) }}
+              </a>
+            </div>
+          </div>
+
+          <!-- Saved file indicator -->
+          <div v-if="msg.saved_file" class="saved-indicator">
+            💾 Saved to: {{ msg.saved_file }}
+          </div>
+
+          <div v-if="msg.role === 'assistant' && !msg.loading && msg.duration" class="message-meta">
+            <span>{{ formatDuration(msg.duration) }}</span>
           </div>
         </div>
       </div>
@@ -335,7 +337,7 @@ onMounted(() => {
       <textarea
         v-model="inputMessage"
         @keydown.enter.exact.prevent="sendMessage"
-        placeholder="Send a command to Claude Code..."
+        :placeholder="researchMode === 'research' ? 'Enter a research topic...' : 'Ask a question...'"
         rows="2"
         inputmode="text"
         autocomplete="off"
@@ -351,14 +353,14 @@ onMounted(() => {
         class="send-button"
       >
         <span v-if="isLoading">...</span>
-        <span v-else>Send</span>
+        <span v-else>{{ researchMode === 'research' ? 'Research' : 'Ask' }}</span>
       </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.agent-chat {
+.goose-chat {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 200px);
@@ -409,15 +411,7 @@ onMounted(() => {
   background: #ef4444;
 }
 
-.cost-display {
-  font-size: 12px;
-  color: #9ca3af;
-  background: #374151;
-  padding: 4px 10px;
-  border-radius: 6px;
-}
-
-.preset-select {
+.mode-select {
   background: #374151;
   border: 1px solid #4b5563;
   border-radius: 6px;
@@ -440,49 +434,7 @@ onMounted(() => {
   color: white;
 }
 
-.preset-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 20px;
-  background: #111827;
-  border-bottom: 1px solid #374151;
-}
-
-.session-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.session-name-input {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 16px; /* Minimum 16px prevents iOS Safari zoom */
-  color: #93c5fd;
-  width: 150px;
-  touch-action: manipulation;
-}
-
-.session-name-input:hover {
-  border-color: #374151;
-}
-
-.session-name-input:focus {
-  outline: none;
-  border-color: #3b82f6;
-  background: #1e3a5f;
-}
-
-.session-id {
-  font-size: 10px;
-  color: #6b7280;
-  font-family: monospace;
-}
-
-.btn-sessions {
+.btn-research {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -495,26 +447,37 @@ onMounted(() => {
   cursor: pointer;
 }
 
-.btn-sessions:hover {
+.btn-research:hover {
   background: #4b5563;
 }
 
-.session-count {
-  background: #3b82f6;
+.research-count {
+  background: #10b981;
   color: white;
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 10px;
 }
 
-.session-picker {
+.mode-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 20px;
   background: #111827;
   border-bottom: 1px solid #374151;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
-.session-picker-header {
+/* Research Panel */
+.research-panel {
+  background: #111827;
+  border-bottom: 1px solid #374151;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.research-panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -538,88 +501,117 @@ onMounted(() => {
   color: white;
 }
 
-.no-sessions {
-  padding: 24px 20px;
-  text-align: center;
-  color: #6b7280;
-  font-size: 14px;
+.research-panel-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
 }
 
-.session-list {
+.research-list {
+  width: 250px;
+  border-right: 1px solid #374151;
+  overflow-y: auto;
   padding: 8px;
 }
 
-.session-item {
+.no-research {
+  padding: 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.research-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px;
-  border-radius: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.2s;
 }
 
-.session-item:hover {
+.research-item:hover {
   background: #1f2937;
 }
 
-.session-item.active {
+.research-item.active {
   background: #1e3a5f;
   border: 1px solid #3b82f6;
 }
 
-.session-item-main {
+.research-item-main {
   flex: 1;
   min-width: 0;
 }
 
-.session-item-name {
-  font-size: 14px;
+.research-item-name {
+  font-size: 13px;
   font-weight: 500;
   color: #e5e7eb;
-  margin-bottom: 4px;
-}
-
-.session-item-preview {
-  font-size: 12px;
-  color: #6b7280;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.session-item-meta {
+.research-item-meta {
   display: flex;
-  align-items: center;
   gap: 8px;
-  margin-left: 12px;
-}
-
-.session-item-time {
   font-size: 11px;
   color: #6b7280;
-  white-space: nowrap;
+  margin-top: 2px;
 }
 
-.session-delete-btn {
+.research-delete-btn {
   background: none;
   border: none;
   color: #6b7280;
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   padding: 0 4px;
   opacity: 0;
   transition: opacity 0.2s;
 }
 
-.session-item:hover .session-delete-btn {
+.research-item:hover .research-delete-btn {
   opacity: 1;
 }
 
-.session-delete-btn:hover {
+.research-delete-btn:hover {
   color: #ef4444;
 }
 
+.research-preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.research-preview-header {
+  padding: 10px 16px;
+  border-bottom: 1px solid #374151;
+  color: #d1d5db;
+  font-size: 13px;
+}
+
+.research-preview-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.research-preview-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+/* Messages */
 .messages-container {
   flex: 1;
   overflow-y: auto;
@@ -694,7 +686,7 @@ onMounted(() => {
 }
 
 .message.user .message-content {
-  background: #2563eb;
+  background: #059669;
   border-bottom-right-radius: 4px;
 }
 
@@ -718,6 +710,45 @@ onMounted(() => {
 
 .message-text.error {
   color: #f87171;
+}
+
+.message-sources {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #4b5563;
+}
+
+.sources-label {
+  font-size: 11px;
+  color: #9ca3af;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.sources-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-link {
+  font-size: 11px;
+  color: #60a5fa;
+  background: #1e3a5f;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.source-link:hover {
+  background: #2563eb;
+  color: white;
+}
+
+.saved-indicator {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #10b981;
 }
 
 .message-meta {
@@ -769,15 +800,15 @@ onMounted(() => {
   border-radius: 8px;
   padding: 12px 16px;
   color: white;
-  font-size: 16px; /* Minimum 16px prevents iOS Safari zoom on focus */
+  font-size: 16px;
   resize: none;
-  touch-action: manipulation; /* Prevents double-tap zoom */
-  -webkit-appearance: none; /* Removes iOS default styling */
+  touch-action: manipulation;
+  -webkit-appearance: none;
 }
 
 .message-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #10b981;
 }
 
 .message-input:disabled {
@@ -785,7 +816,7 @@ onMounted(() => {
 }
 
 .send-button {
-  background: #2563eb;
+  background: #059669;
   border: none;
   border-radius: 8px;
   padding: 12px 24px;
@@ -798,7 +829,7 @@ onMounted(() => {
 }
 
 .send-button:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: #047857;
 }
 
 .send-button:disabled {

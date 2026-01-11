@@ -12,3 +12,19 @@ body {
 #app {
   min-height: 100vh;
 }
+
+/* Mobile input fixes - prevent iOS Safari zoom on focus */
+input,
+textarea,
+select {
+  font-size: 16px !important; /* Minimum 16px prevents iOS auto-zoom */
+  touch-action: manipulation; /* Prevents double-tap zoom delay */
+  -webkit-appearance: none; /* Removes iOS default styling */
+  -webkit-tap-highlight-color: transparent; /* Removes tap highlight */
+}
+
+/* Ensure buttons are touch-friendly */
+button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}

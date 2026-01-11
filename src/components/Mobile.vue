@@ -28,16 +28,54 @@ function refreshPage() {
 }
 
 const isInputFocused = ref(false)
-function onInputFocus() {
+const inputContainerTop = ref(null) // null = use CSS default, number = use top positioning
+
+function onInputFocus(event) {
   isInputFocused.value = true
+  // Trigger immediate viewport check
+  handleViewportResize()
+  // Scroll input into view after keyboard animates
+  setTimeout(() => {
+    handleViewportResize()
+    event?.target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, 300)
 }
+
 function onInputBlur() {
   setTimeout(() => {
     const active = document.activeElement
     if (!active || (active.tagName !== 'TEXTAREA' && active.tagName !== 'INPUT')) {
       isInputFocused.value = false
+      inputContainerTop.value = null
     }
-  }, 50)
+  }, 150)
+}
+
+// Handle iOS keyboard via visualViewport API
+// Use TOP positioning with transform instead of BOTTOM - more reliable on iOS
+function handleViewportResize() {
+  if (window.visualViewport && isInputFocused.value) {
+    const viewport = window.visualViewport
+    // Position at the bottom of the visual viewport using TOP
+    // viewport.height gives us the visible area (excluding keyboard + accessory bar)
+    // viewport.offsetTop accounts for any scroll offset
+    inputContainerTop.value = viewport.offsetTop + viewport.height
+  }
+}
+
+// Setup visualViewport listener
+function setupViewportListener() {
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', handleViewportResize)
+    window.visualViewport.addEventListener('scroll', handleViewportResize)
+  }
+}
+
+function cleanupViewportListener() {
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', handleViewportResize)
+    window.visualViewport.removeEventListener('scroll', handleViewportResize)
+  }
 }
 
 function getServiceUrl(port, useLocal = false) {
@@ -168,12 +206,16 @@ onMounted(() => {
   loadChatModels()
   startTelemetryPolling(apiBaseUrl.value)
   window.addEventListener('resize', resizeTelemetryCharts)
+
+  // Setup iOS keyboard handling
+  setupViewportListener()
 })
 
 onUnmounted(() => {
   stopTelemetryPolling()
   cleanupTelemetry()
   window.removeEventListener('resize', resizeTelemetryCharts)
+  cleanupViewportListener()
 })
 
 // Watch for tab changes
@@ -249,6 +291,11 @@ watch(activeTab, (tab) => {
           <input
             v-model="agentSessionName"
             @blur="saveAgentSession"
+            @focus="onInputFocus($event)"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="words"
             class="session-name-input"
             placeholder="Name this session..."
           />
@@ -277,8 +324,24 @@ watch(activeTab, (tab) => {
           </div>
         </div>
 
-        <div class="agent-input-container" :class="{ 'input-focused': isInputFocused }">
-          <textarea v-model="agentInput" @focus="onInputFocus" @blur="onInputBlur" @keydown.enter.exact.prevent="sendAgentMessage" placeholder="Send command to Claude..." rows="1" class="agent-input"></textarea>
+        <div
+          class="agent-input-container"
+          :class="{ 'input-focused': isInputFocused }"
+          :style="inputContainerTop !== null ? { top: inputContainerTop + 'px', bottom: 'auto', transform: 'translateY(-100%)' } : {}"
+        >
+          <textarea
+            v-model="agentInput"
+            @focus="onInputFocus($event)"
+            @blur="onInputBlur"
+            @keydown.enter.exact.prevent="sendAgentMessage"
+            placeholder="Send command to Claude..."
+            rows="1"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
+            class="agent-input"
+          ></textarea>
           <button @click="sendAgentMessage" :disabled="agentLoading || !agentInput.trim()" class="send-btn agent">
             <span v-if="agentLoading">...</span>
             <span v-else>➤</span>
@@ -338,15 +401,23 @@ watch(activeTab, (tab) => {
           </div>
         </div>
 
-        <div class="chat-input-container" :class="{ 'input-focused': isInputFocused }">
+        <div
+          class="chat-input-container"
+          :class="{ 'input-focused': isInputFocused }"
+          :style="inputContainerTop !== null ? { top: inputContainerTop + 'px', bottom: 'auto', transform: 'translateY(-100%)' } : {}"
+        >
           <textarea
             v-model="chatInput"
-            @focus="onInputFocus"
+            @focus="onInputFocus($event)"
             @blur="onInputBlur"
             @keydown.enter.exact.prevent="sendChat"
             :placeholder="selectedChatModel ? 'Type a message...' : 'Select a model first...'"
             :disabled="!selectedChatModel"
             rows="1"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
             class="chat-input"
           ></textarea>
           <button @click="sendChat" :disabled="chatLoading || !chatInput.trim() || !selectedChatModel" class="send-btn">
@@ -362,7 +433,18 @@ watch(activeTab, (tab) => {
           <select v-model="selectedImageModel" class="model-select">
             <option v-for="m in imageModels" :key="m.id" :value="m.id">{{ m.name }}</option>
           </select>
-          <textarea v-model="imagePrompt" placeholder="Describe your image..." rows="3" class="prompt-input"></textarea>
+          <textarea
+            v-model="imagePrompt"
+            @focus="onInputFocus($event)"
+            @blur="onInputBlur"
+            placeholder="Describe your image..."
+            rows="3"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
+            class="prompt-input"
+          ></textarea>
           <button @click="generateImage" :disabled="imageGenerating" class="generate-btn">
             <span v-if="imageGenerating">Generating... {{ imageProgress }}%</span>
             <span v-else>Generate Image</span>
@@ -388,7 +470,18 @@ watch(activeTab, (tab) => {
           <select v-model="selectedVideoPreset" class="model-select">
             <option v-for="p in videoPresets" :key="p.name" :value="p">{{ p.name }}</option>
           </select>
-          <textarea v-model="videoPrompt" placeholder="Describe your video scene..." rows="3" class="prompt-input"></textarea>
+          <textarea
+            v-model="videoPrompt"
+            @focus="onInputFocus($event)"
+            @blur="onInputBlur"
+            placeholder="Describe your video scene..."
+            rows="3"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
+            class="prompt-input"
+          ></textarea>
           <button @click="generateVideo" :disabled="videoGenerating" class="generate-btn video">
             <span v-if="videoGenerating">Generating... {{ Math.round(videoProgress) }}%</span>
             <span v-else>Generate Video</span>
@@ -1005,8 +1098,9 @@ watch(activeTab, (tab) => {
   background: transparent;
   border: none;
   color: #93c5fd;
-  font-size: 14px;
+  font-size: 16px; /* Minimum 16px prevents iOS zoom */
   padding: 4px;
+  touch-action: manipulation;
 }
 
 .session-name-input:focus {
@@ -1103,10 +1197,12 @@ watch(activeTab, (tab) => {
   border-top: 1px solid #374151;
   display: flex;
   gap: 8px;
-  transition: bottom 0.15s ease-out;
+  transition: transform 0.15s ease-out, top 0.15s ease-out, bottom 0.15s ease-out;
+  z-index: 100;
 }
 
 .agent-input-container.input-focused {
+  /* Fallback when visualViewport style not yet applied */
   bottom: var(--sab, 0px);
 }
 
@@ -1319,10 +1415,12 @@ watch(activeTab, (tab) => {
   border-top: 1px solid #374151;
   display: flex;
   gap: 8px;
-  transition: bottom 0.15s ease-out;
+  transition: transform 0.15s ease-out, top 0.15s ease-out, bottom 0.15s ease-out;
+  z-index: 100;
 }
 
 .chat-input-container.input-focused {
+  /* Fallback when visualViewport style not yet applied */
   bottom: var(--sab, 0px);
 }
 
@@ -1354,6 +1452,8 @@ watch(activeTab, (tab) => {
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .send-btn:disabled {
@@ -2004,6 +2104,8 @@ watch(activeTab, (tab) => {
   color: #6b7280;
   cursor: pointer;
   transition: color 0.2s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .nav-btn.active {

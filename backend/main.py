@@ -74,8 +74,18 @@ class SaveSessionRequest(BaseModel):
     first_message: Optional[str] = None
 
 
+class GooseChatRequest(BaseModel):
+    message: str
+    mode: str = "chat"  # "chat" for quick Q&A, "research" for full research agent
+
+
 # Claude Code executable path
 CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
+
+# Goose executable path and research directory
+GOOSE_PATH = os.path.expanduser("~/.local/bin/goose")
+GOOSE_RESEARCH_DIR = os.path.expanduser("~/goose-research")
+GOOSE_DATA_DIR = os.path.expanduser("~/goose-research/data")
 
 # Session storage file
 SESSIONS_FILE = os.path.expanduser("~/.dgx-web-ui-sessions.json")
@@ -798,6 +808,189 @@ async def claude_chat_stream(request: ClaudeCodeRequest):
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ============ Goose Research Agent Integration ============
+
+@app.get("/api/goose/status")
+async def goose_status():
+    """Check if Goose is available"""
+    try:
+        result = subprocess.run(
+            [GOOSE_PATH, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return {
+                "available": True,
+                "version": result.stdout.strip(),
+                "path": GOOSE_PATH
+            }
+        return {"available": False, "error": result.stderr}
+    except FileNotFoundError:
+        return {"available": False, "error": "Goose not found"}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@app.post("/api/goose/chat")
+async def goose_chat(request: GooseChatRequest):
+    """Send a message to Goose research agent"""
+    import time
+    start_time = time.time()
+
+    try:
+        # Build command based on mode
+        if request.mode == "research":
+            # Use the research recipe for full research with saving
+            cmd = [
+                GOOSE_PATH, "run",
+                "--recipe", os.path.join(GOOSE_RESEARCH_DIR, "research-agent.yaml"),
+                "--params", f"topic={request.message}"
+            ]
+        else:
+            # Quick chat mode - just run with text
+            cmd = [
+                GOOSE_PATH, "run",
+                "--text", request.message
+            ]
+
+        # Set environment for Ollama (use env var or default to host.docker.internal for container)
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://host.docker.internal:11434")
+        env = {
+            **os.environ,
+            "OLLAMA_HOST": ollama_host,
+            "PATH": f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '')}"
+        }
+
+        # Run Goose with timeout (10 minutes for research, 3 minutes for chat)
+        timeout = 600 if request.mode == "research" else 180
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=GOOSE_RESEARCH_DIR
+        )
+
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        if result.returncode != 0:
+            return {
+                "result": f"Error: {result.stderr or 'Unknown error'}",
+                "duration_ms": duration_ms,
+                "sources": [],
+                "saved_file": None,
+                "is_error": True
+            }
+
+        # Parse output to extract sources if present
+        output = result.stdout
+        sources = []
+        saved_file = None
+
+        # Try to extract URLs from output
+        import re
+        # Match URLs but exclude trailing punctuation like ), ], etc.
+        raw_urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', output)
+        # Clean up URLs by removing trailing punctuation
+        cleaned_urls = []
+        for url in raw_urls:
+            # Remove trailing punctuation that's often not part of the URL
+            url = url.rstrip('.,;:!?)>\'"')
+            if url and len(url) > 10:  # Basic sanity check
+                cleaned_urls.append(url)
+        sources = list(set(cleaned_urls))[:10]  # Dedupe and limit to 10
+
+        # Check if a file was saved (look for "Saved to:" pattern)
+        saved_match = re.search(r'(?:Saved to|saved to|Saving to):\s*([^\s\n]+\.md)', output)
+        if saved_match:
+            saved_file = saved_match.group(1)
+
+        return {
+            "result": output,
+            "duration_ms": duration_ms,
+            "sources": sources,
+            "saved_file": saved_file,
+            "is_error": False
+        }
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail=f"Goose request timed out")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Goose not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/goose/research")
+async def list_research():
+    """List all saved research files"""
+    try:
+        files = []
+        if os.path.exists(GOOSE_DATA_DIR):
+            for filename in os.listdir(GOOSE_DATA_DIR):
+                if filename.endswith('.md'):
+                    filepath = os.path.join(GOOSE_DATA_DIR, filename)
+                    stat = os.stat(filepath)
+                    files.append({
+                        "name": filename,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                    })
+            # Sort by modified time, newest first
+            files.sort(key=lambda x: x["modified"], reverse=True)
+            # Convert mtime to ISO format
+            from datetime import datetime
+            for f in files:
+                f["modified"] = datetime.fromtimestamp(f["modified"]).isoformat()
+        return {"files": files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/goose/research/{filename}")
+async def get_research(filename: str):
+    """Get content of a research file"""
+    try:
+        filepath = os.path.join(GOOSE_DATA_DIR, filename)
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Security check - ensure we're not reading outside data dir
+        real_path = os.path.realpath(filepath)
+        if not real_path.startswith(os.path.realpath(GOOSE_DATA_DIR)):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        with open(filepath, 'r') as f:
+            content = f.read()
+        return {"content": content, "filename": filename}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/goose/research/{filename}")
+async def delete_research(filename: str):
+    """Delete a research file"""
+    try:
+        filepath = os.path.join(GOOSE_DATA_DIR, filename)
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Security check
+        real_path = os.path.realpath(filepath)
+        if not real_path.startswith(os.path.realpath(GOOSE_DATA_DIR)):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        os.remove(filepath)
+        return {"success": True, "deleted": filename}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

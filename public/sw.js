@@ -1,5 +1,5 @@
 // DGX Spark PWA Service Worker
-const CACHE_NAME = 'dgx-spark-v1'
+const CACHE_NAME = 'dgx-spark-v3'
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -9,26 +9,34 @@ const STATIC_ASSETS = [
   '/icons/icon-512.png'
 ]
 
-// Install - cache static assets
+// Install - cache static assets and force activate
 self.addEventListener('install', (event) => {
+  console.log('SW: Installing v3...')
+  // Skip waiting immediately - don't wait for old SW to stop
+  self.skipWaiting()
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS)
     })
   )
-  self.skipWaiting()
 })
 
-// Activate - clean old caches
+// Activate - clean ALL old caches and take control immediately
 self.addEventListener('activate', (event) => {
+  console.log('SW: Activating v3, clearing old caches...')
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key !== CACHE_NAME).map((key) => {
+          console.log('SW: Deleting old cache:', key)
+          return caches.delete(key)
+        })
       )
+    }).then(() => {
+      // Take control of all clients immediately
+      return self.clients.claim()
     })
   )
-  self.clients.claim()
 })
 
 // Fetch - network first, fallback to cache for static assets

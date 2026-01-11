@@ -65,6 +65,12 @@ DEPLOYMENT_TEST_REPORT.md
 README.clean.md
 src/constants/mobileConstants.clean.js
 REFACTORING_SUMMARY.md
-CLAUDE.md
 deploy.sh
 src/constants/mobileConstants.js
+
+# Claude Code local config (may contain secrets)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Security reports (may contain sensitive findings)
+docs/security-reports/
