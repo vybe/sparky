@@ -624,9 +624,9 @@ watch(activeTab, (tab) => {
             <div class="rick-title">Rick - Family Assistant</div>
             <div class="rick-desc">Documents & personal info</div>
             <div class="rick-examples">
-              <button @click="rickInput = 'What documents expire soon?'" class="example-chip rick-chip">Expiring docs?</button>
-              <button @click="rickInput = 'Show my NIF number'" class="example-chip rick-chip">NIF number</button>
-              <button @click="rickInput = 'Current address?'" class="example-chip rick-chip">Address</button>
+              <button @click="rickInput = 'What files are available?'" class="example-chip rick-chip">Available files</button>
+              <button @click="rickInput = 'Search for a document'" class="example-chip rick-chip">Search docs</button>
+              <button @click="rickInput = 'Help me organize'" class="example-chip rick-chip">Organize</button>
             </div>
           </div>
           <div v-for="(msg, idx) in rickMessages" :key="idx" :class="['message', msg.role]">

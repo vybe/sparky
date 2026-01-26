@@ -605,14 +605,14 @@ onUnmounted(() => {
           personal information, and administrative tasks.
         </div>
         <div class="example-prompts">
-          <button @click="inputMessage = 'What documents are expiring soon?'" class="example-btn">
-            Documents expiring soon?
+          <button @click="inputMessage = 'What files do you have access to?'" class="example-btn">
+            What files are available?
           </button>
-          <button @click="inputMessage = 'Show my Portuguese NIF number'" class="example-btn">
-            Show my NIF number
+          <button @click="inputMessage = 'Search for a document'" class="example-btn">
+            Search for a document
           </button>
-          <button @click="inputMessage = 'What is our current address?'" class="example-btn">
-            Current address?
+          <button @click="inputMessage = 'Help me organize information'" class="example-btn">
+            Help me organize
           </button>
         </div>
       </div>

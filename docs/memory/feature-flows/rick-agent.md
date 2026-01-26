@@ -4,7 +4,7 @@
 Family assistant chat interface using Claude Code CLI with a dedicated working directory (`~/agent-rick`) for accessing family documents and personal information. Uses SSE streaming for real-time output with session persistence and file upload support.
 
 ## User Story
-As a user, I want to ask Rick about family documents, personal information, and administrative tasks so that I can quickly find expiration dates, NIF numbers, addresses, and other family-related data.
+As a user, I want to ask Rick about personal documents and information so that I can quickly search, organize, and retrieve stored data.
 
 ## Entry Points
 - **UI**: `src/components/RickChat.vue:524` - Rick tab in desktop navigation
@@ -246,9 +246,9 @@ User Input --> /api/rick/chat/stream --> asyncio subprocess
 
 ### Example Prompts (RickChat.vue:608-617)
 ```javascript
-<button @click="inputMessage = 'What documents are expiring soon?'">
-<button @click="inputMessage = 'Show my Portuguese NIF number'">
-<button @click="inputMessage = 'What is our current address?'">
+<button @click="inputMessage = 'What files do you have access to?'">
+<button @click="inputMessage = 'Search for a document'">
+<button @click="inputMessage = 'Help me organize information'">
 ```
 
 ### Session Picker (RickChat.vue:569-596)
