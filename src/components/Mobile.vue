@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import 'uplot/dist/uPlot.min.css'
 
 // Import constants
@@ -12,12 +12,14 @@ import { formatRelativeTime, formatAgentCost } from '../utils/formatters.js'
 import { useTelemetry } from '../composables/useTelemetry.js'
 import { useChat } from '../composables/useChat.js'
 import { useAgent } from '../composables/useAgent.js'
+import { useRick } from '../composables/useRick.js'
 import { useImageGeneration } from '../composables/useImageGeneration.js'
 import { useVideoGeneration } from '../composables/useVideoGeneration.js'
 import { useManagement } from '../composables/useManagement.js'
 
 // Navigation
 const activeTab = ref('status')
+const rickOnly = ref(false)  // Rick-only mode (for ?rick=1 URL)
 
 // API base URL
 const apiBaseUrl = computed(() => '/api')
@@ -87,6 +89,7 @@ function getServiceUrl(port, useLocal = false) {
 const telemetry = useTelemetry()
 const chat = useChat()
 const agent = useAgent(apiBaseUrl.value)
+const rick = useRick(apiBaseUrl.value)
 const imageGen = useImageGeneration()
 const videoGen = useVideoGeneration()
 const management = useManagement(apiBaseUrl.value)
@@ -138,14 +141,44 @@ const {
   savedSessions,
   showSessionPicker,
   agentSessionName,
+  currentTool,
+  lastFailedSessionId,
   checkAgentStatus,
   loadSessions,
   saveAgentSession,
   loadAgentSession,
   deleteAgentSession,
   sendAgentMessage,
-  clearAgent
+  cancelAgentStream,
+  resumeLastSession,
+  clearAgent,
+  cleanup: cleanupAgent
 } = agent
+
+const {
+  rickMessages,
+  rickInput,
+  rickLoading,
+  rickSessionId,
+  rickContainer,
+  rickStatus,
+  rickTotalCost,
+  rickSavedSessions,
+  showRickSessionPicker,
+  rickSessionName,
+  rickCurrentTool,
+  rickLastFailedSessionId,
+  checkRickStatus,
+  loadRickSessions,
+  saveRickSession,
+  loadRickSession,
+  deleteRickSession,
+  sendRickMessage,
+  cancelRickStream,
+  resumeRickLastSession,
+  clearRick,
+  cleanupRick
+} = rick
 
 const {
   selectedImageModel,
@@ -191,17 +224,163 @@ const {
   getStatusClass
 } = management
 
+// Goose Research Agent state
+const gooseMessages = ref([])
+const gooseInput = ref('')
+const gooseLoading = ref(false)
+const gooseStatus = ref(null)
+const gooseContainer = ref(null)
+const gooseMode = ref('chat')
+const savedResearch = ref([])
+const showResearchList = ref(false)
+const selectedResearch = ref(null)
+
+const gooseModes = [
+  { id: 'chat', name: 'Quick Chat' },
+  { id: 'research', name: 'Deep Research' },
+]
+
+async function checkGooseStatus() {
+  try {
+    const res = await fetch(`${apiBaseUrl.value}/goose/status`)
+    gooseStatus.value = await res.json()
+  } catch (e) {
+    gooseStatus.value = { available: false, error: e.message }
+  }
+}
+
+async function loadResearchFiles() {
+  try {
+    const res = await fetch(`${apiBaseUrl.value}/goose/research`)
+    const data = await res.json()
+    savedResearch.value = data.files || []
+  } catch (e) {
+    console.error('Failed to load research:', e)
+  }
+}
+
+async function viewResearchFile(file) {
+  try {
+    const res = await fetch(`${apiBaseUrl.value}/goose/research/${encodeURIComponent(file.name)}`)
+    const data = await res.json()
+    selectedResearch.value = { ...file, content: data.content }
+  } catch (e) {
+    console.error('Failed to load research file:', e)
+  }
+}
+
+async function deleteResearchFile(file, event) {
+  event.stopPropagation()
+  if (!confirm(`Delete "${file.name}"?`)) return
+  try {
+    await fetch(`${apiBaseUrl.value}/goose/research/${encodeURIComponent(file.name)}`, { method: 'DELETE' })
+    await loadResearchFiles()
+    if (selectedResearch.value?.name === file.name) {
+      selectedResearch.value = null
+    }
+  } catch (e) {
+    console.error('Failed to delete:', e)
+  }
+}
+
+async function sendGooseMessage() {
+  if (!gooseInput.value.trim() || gooseLoading.value) return
+
+  const userMessage = gooseInput.value.trim()
+  gooseInput.value = ''
+
+  gooseMessages.value.push({ role: 'user', content: userMessage })
+  gooseMessages.value.push({ role: 'assistant', content: '', loading: true })
+  scrollGooseToBottom()
+
+  gooseLoading.value = true
+
+  try {
+    const res = await fetch(`${apiBaseUrl.value}/goose/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: userMessage, mode: gooseMode.value })
+    })
+
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.detail || 'Request failed')
+    }
+
+    const data = await res.json()
+    const lastMsg = gooseMessages.value[gooseMessages.value.length - 1]
+    lastMsg.loading = false
+    lastMsg.content = data.result
+    lastMsg.duration = data.duration_ms
+    lastMsg.sources = data.sources || []
+    lastMsg.saved_file = data.saved_file
+
+    if (data.saved_file) {
+      await loadResearchFiles()
+    }
+
+    scrollGooseToBottom()
+  } catch (e) {
+    const lastMsg = gooseMessages.value[gooseMessages.value.length - 1]
+    lastMsg.loading = false
+    lastMsg.content = `Error: ${e.message}`
+    lastMsg.isError = true
+  } finally {
+    gooseLoading.value = false
+  }
+}
+
+function scrollGooseToBottom() {
+  setTimeout(() => {
+    if (gooseContainer.value) {
+      gooseContainer.value.scrollTop = gooseContainer.value.scrollHeight
+    }
+  }, 50)
+}
+
+function clearGoose() {
+  gooseMessages.value = []
+  selectedResearch.value = null
+}
+
+function formatDuration(ms) {
+  if (!ms) return ''
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 60000).toFixed(1)}m`
+}
+
+function getHostname(url) {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url.length > 25 ? url.slice(0, 25) + '...' : url
+  }
+}
+
 // Lifecycle hooks
 onMounted(() => {
-  // Check URL for initial tab
+  // Check URL for initial tab or Rick-only mode
   const params = new URLSearchParams(window.location.search)
-  const tab = params.get('tab')
-  if (tab && tabs.some(t => t.id === tab)) {
-    activeTab.value = tab
+
+  // Rick-only mode: ?rick=1
+  if (params.get('rick') === '1') {
+    rickOnly.value = true
+    activeTab.value = 'rick'
+  } else {
+    const tab = params.get('tab')
+    if (tab && tabs.some(t => t.id === tab)) {
+      activeTab.value = tab
+    }
   }
 
   // Initialize data
-  checkAgentStatus()
+  if (rickOnly.value) {
+    checkRickStatus()
+    loadRickSessions()
+  } else {
+    checkAgentStatus()
+  }
   loadSessions()
   loadChatModels()
   startTelemetryPolling(apiBaseUrl.value)
@@ -214,13 +393,28 @@ onMounted(() => {
 onUnmounted(() => {
   stopTelemetryPolling()
   cleanupTelemetry()
+  cleanupAgent()
+  cleanupRick()
   window.removeEventListener('resize', resizeTelemetryCharts)
   cleanupViewportListener()
 })
 
 // Watch for tab changes
 watch(activeTab, (tab) => {
+  if (tab === 'status') {
+    // Re-initialize charts when switching back to status tab
+    // nextTick ensures DOM elements are ready
+    nextTick(() => initTelemetryCharts())
+  }
   if (tab === 'agent' && !agentStatus.value) checkAgentStatus()
+  if (tab === 'rick' && !rickStatus.value) {
+    checkRickStatus()
+    loadRickSessions()
+  }
+  if (tab === 'goose' && !gooseStatus.value) {
+    checkGooseStatus()
+    loadResearchFiles()
+  }
   if (tab === 'chat' && chatModels.value.length === 0) loadChatModels()
   if (tab === 'manage') loadManagement()
 })
@@ -228,18 +422,18 @@ watch(activeTab, (tab) => {
 <template>
   <div class="mobile-app">
     <!-- Header -->
-    <header class="mobile-header">
+    <header class="mobile-header" :class="{ 'rick-only-header': rickOnly }">
       <div class="header-content">
-        <div class="app-title">Sparky</div>
+        <div class="app-title">{{ rickOnly ? 'Rick' : 'Sparky' }}</div>
         <div class="header-actions">
           <button @click="refreshPage" class="refresh-btn" title="Refresh">↻</button>
-          <div class="status-dot" :class="systemStats ? 'online' : 'offline'"></div>
+          <div class="status-dot" :class="(rickOnly ? rickStatus?.available : systemStats) ? 'online' : 'offline'"></div>
         </div>
       </div>
     </header>
 
     <!-- Content Area -->
-    <main class="mobile-content">
+    <main class="mobile-content" :class="{ 'rick-only-content': rickOnly }">
       <!-- Agent Tab (Claude Code) -->
       <div v-if="activeTab === 'agent'" class="tab-content agent-tab">
         <div class="agent-header">
@@ -315,13 +509,28 @@ watch(activeTab, (tab) => {
           </div>
           <div v-for="(msg, idx) in agentMessages" :key="idx" :class="['message', msg.role]">
             <div class="message-bubble">
-              <div v-if="msg.loading" class="typing"><span></span><span></span><span></span></div>
-              <pre v-else class="message-text" :class="{ 'error-text': msg.isError }">{{ msg.content }}</pre>
+              <div v-if="msg.loading && !msg.content" class="typing">
+                <span></span><span></span><span></span>
+                <span class="typing-label">{{ currentTool ? `Using ${currentTool}...` : 'Thinking...' }}</span>
+              </div>
+              <template v-else>
+                <pre class="message-text" :class="{ 'error-text': msg.isError, 'streaming-text': msg.streaming }">{{ msg.content }}</pre>
+                <span v-if="msg.streaming && msg.loading" class="streaming-cursor">▋</span>
+              </template>
             </div>
-            <div v-if="msg.role === 'assistant' && !msg.loading && msg.cost" class="message-cost">
-              {{ formatAgentCost(msg.cost) }}
+            <div v-if="msg.role === 'assistant' && !msg.loading" class="message-meta-mobile">
+              <span v-if="msg.tools && msg.tools.length" class="tools-badge">🔧 {{ msg.tools.join(', ') }}</span>
+              <span v-if="msg.cost" class="message-cost">{{ formatAgentCost(msg.cost) }}</span>
+              <span v-if="msg.duration" class="message-duration">{{ formatDuration(msg.duration) }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- Resume Banner -->
+        <div v-if="lastFailedSessionId && !agentLoading" class="resume-banner-mobile">
+          <span class="resume-text-mobile">⚠️ Task may have completed</span>
+          <button @click="resumeLastSession" class="resume-btn-mobile">Resume</button>
+          <button @click="lastFailedSessionId = null" class="dismiss-btn-mobile">×</button>
         </div>
 
         <div
@@ -342,8 +551,236 @@ watch(activeTab, (tab) => {
             autocapitalize="sentences"
             class="agent-input"
           ></textarea>
-          <button @click="sendAgentMessage" :disabled="agentLoading || !agentInput.trim()" class="send-btn agent">
-            <span v-if="agentLoading">...</span>
+          <button v-if="agentLoading" @click="cancelAgentStream" class="cancel-btn-mobile">✕</button>
+          <button v-else @click="sendAgentMessage" :disabled="!agentInput.trim()" class="send-btn agent">➤</button>
+        </div>
+      </div>
+
+      <!-- Rick Tab (Family Assistant) -->
+      <div v-if="activeTab === 'rick'" class="tab-content rick-tab">
+        <div class="rick-header">
+          <div class="rick-status">
+            <span v-if="rickStatus?.available" class="status-dot-inline online"></span>
+            <span v-else class="status-dot-inline offline"></span>
+            <span class="rick-version">{{ rickStatus?.available ? rickStatus.version : 'Offline' }}</span>
+          </div>
+          <div class="rick-controls">
+            <span v-if="rickTotalCost > 0" class="rick-cost">{{ formatAgentCost(rickTotalCost) }}</span>
+            <button @click="showRickSessionPicker = !showRickSessionPicker" class="btn-icon sessions-btn">
+              📂<span v-if="rickSavedSessions.length" class="session-badge rick-badge">{{ rickSavedSessions.length }}</span>
+            </button>
+            <button @click="clearRick" class="btn-icon">➕</button>
+          </div>
+        </div>
+
+        <!-- Rick Session Picker -->
+        <div v-if="showRickSessionPicker" class="session-picker-mobile rick-session-picker">
+          <div class="session-picker-header">
+            <span>Saved Sessions</span>
+            <button @click="showRickSessionPicker = false" class="close-btn">×</button>
+          </div>
+          <div v-if="rickSavedSessions.length === 0" class="no-sessions">
+            No saved sessions. Start chatting to create one.
+          </div>
+          <div v-else class="session-list-mobile">
+            <div
+              v-for="session in rickSavedSessions"
+              :key="session.session_id"
+              @click="loadRickSession(session)"
+              class="session-item-mobile"
+              :class="{ active: session.session_id === rickSessionId }"
+            >
+              <div class="session-item-info">
+                <div class="session-name">{{ session.name }}</div>
+                <div class="session-preview">{{ session.first_message || '...' }}</div>
+              </div>
+              <div class="session-item-actions">
+                <span class="session-time">{{ formatRelativeTime(session.updated_at) }}</span>
+                <button @click="deleteRickSession(session, $event)" class="delete-btn">×</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rick Session Name (when active) -->
+        <div v-if="rickSessionId && !showRickSessionPicker" class="active-session-bar rick-session-bar">
+          <input
+            v-model="rickSessionName"
+            @blur="saveRickSession"
+            @focus="onInputFocus($event)"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="words"
+            class="session-name-input rick-session-input"
+            placeholder="Name this session..."
+          />
+          <span class="session-id-badge rick-id-badge">{{ rickSessionId.slice(0, 6) }}</span>
+        </div>
+
+        <div ref="rickContainer" class="rick-messages">
+          <div v-if="rickMessages.length === 0" class="empty-state rick-empty">
+            <div class="rick-icon">🧑‍💼</div>
+            <div class="rick-title">Rick - Family Assistant</div>
+            <div class="rick-desc">Documents & personal info</div>
+            <div class="rick-examples">
+              <button @click="rickInput = 'What documents expire soon?'" class="example-chip rick-chip">Expiring docs?</button>
+              <button @click="rickInput = 'Show my NIF number'" class="example-chip rick-chip">NIF number</button>
+              <button @click="rickInput = 'Current address?'" class="example-chip rick-chip">Address</button>
+            </div>
+          </div>
+          <div v-for="(msg, idx) in rickMessages" :key="idx" :class="['message', msg.role]">
+            <div class="message-bubble rick-bubble">
+              <div v-if="msg.loading && !msg.content" class="typing">
+                <span></span><span></span><span></span>
+                <span class="typing-label">{{ rickCurrentTool ? `Using ${rickCurrentTool}...` : 'Thinking...' }}</span>
+              </div>
+              <template v-else>
+                <pre class="message-text" :class="{ 'error-text': msg.isError, 'streaming-text': msg.streaming }">{{ msg.content }}</pre>
+                <span v-if="msg.streaming && msg.loading" class="streaming-cursor rick-cursor">▋</span>
+              </template>
+            </div>
+            <div v-if="msg.role === 'assistant' && !msg.loading" class="message-meta-mobile">
+              <span v-if="msg.tools && msg.tools.length" class="tools-badge rick-tools">🔧 {{ msg.tools.join(', ') }}</span>
+              <span v-if="msg.cost" class="message-cost">{{ formatAgentCost(msg.cost) }}</span>
+              <span v-if="msg.duration" class="message-duration">{{ formatDuration(msg.duration) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rick Resume Banner -->
+        <div v-if="rickLastFailedSessionId && !rickLoading" class="resume-banner-mobile rick-resume">
+          <span class="resume-text-mobile">⚠️ Task may have completed</span>
+          <button @click="resumeRickLastSession" class="resume-btn-mobile">Resume</button>
+          <button @click="rickLastFailedSessionId = null" class="dismiss-btn-mobile">×</button>
+        </div>
+
+        <div
+          class="rick-input-container"
+          :class="{ 'input-focused': isInputFocused }"
+          :style="inputContainerTop !== null ? { top: inputContainerTop + 'px', bottom: 'auto', transform: 'translateY(-100%)' } : {}"
+        >
+          <textarea
+            v-model="rickInput"
+            @focus="onInputFocus($event)"
+            @blur="onInputBlur"
+            @keydown.enter.exact.prevent="sendRickMessage"
+            placeholder="Ask Rick about documents..."
+            rows="1"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
+            class="rick-input"
+          ></textarea>
+          <button v-if="rickLoading" @click="cancelRickStream" class="cancel-btn-mobile">✕</button>
+          <button v-else @click="sendRickMessage" :disabled="!rickInput.trim()" class="send-btn rick">➤</button>
+        </div>
+      </div>
+
+      <!-- Goose Tab -->
+      <div v-if="activeTab === 'goose'" class="tab-content goose-tab">
+        <div class="goose-header">
+          <div class="goose-status">
+            <span v-if="gooseStatus?.available" class="status-dot-inline online"></span>
+            <span v-else class="status-dot-inline offline"></span>
+            <span class="goose-version">{{ gooseStatus?.available ? gooseStatus.version : 'Offline' }}</span>
+          </div>
+          <div class="goose-controls">
+            <select v-model="gooseMode" class="mode-select-mini">
+              <option v-for="m in gooseModes" :key="m.id" :value="m.id">{{ m.name }}</option>
+            </select>
+            <button @click="showResearchList = !showResearchList" class="btn-icon research-btn">
+              📚<span v-if="savedResearch.length" class="research-badge">{{ savedResearch.length }}</span>
+            </button>
+            <button @click="clearGoose" class="btn-icon">➕</button>
+          </div>
+        </div>
+
+        <!-- Research Files List -->
+        <div v-if="showResearchList" class="research-list-mobile">
+          <div class="research-list-header">
+            <span>Saved Research</span>
+            <button @click="showResearchList = false" class="close-btn">×</button>
+          </div>
+          <div v-if="savedResearch.length === 0" class="no-research">
+            No saved research yet. Use Deep Research mode.
+          </div>
+          <div v-else class="research-items">
+            <div
+              v-for="file in savedResearch"
+              :key="file.name"
+              @click="viewResearchFile(file)"
+              class="research-file-item"
+              :class="{ active: selectedResearch?.name === file.name }"
+            >
+              <div class="research-file-info">
+                <div class="research-file-name">{{ file.name.replace('.md', '') }}</div>
+                <div class="research-file-meta">{{ formatRelativeTime(file.modified) }}</div>
+              </div>
+              <button @click="deleteResearchFile(file, $event)" class="delete-btn">×</button>
+            </div>
+          </div>
+          <!-- Research Preview -->
+          <div v-if="selectedResearch" class="research-preview-mobile">
+            <div class="research-preview-header">{{ selectedResearch.name }}</div>
+            <pre class="research-preview-content">{{ selectedResearch.content }}</pre>
+          </div>
+        </div>
+
+        <div ref="gooseContainer" class="goose-messages">
+          <div v-if="gooseMessages.length === 0" class="empty-state goose-empty">
+            <div class="goose-icon">🪿</div>
+            <div class="goose-title">Goose Research Agent</div>
+            <div class="goose-desc">Web search + research notes</div>
+            <div class="goose-examples">
+              <button @click="gooseInput = 'Latest AI agent frameworks'" class="example-chip">AI frameworks</button>
+              <button @click="gooseInput = 'Compare local LLM options'" class="example-chip">LLM comparison</button>
+              <button @click="gooseInput = 'MCP protocol overview'" class="example-chip">MCP protocol</button>
+            </div>
+          </div>
+          <div v-for="(msg, idx) in gooseMessages" :key="idx" :class="['message', msg.role]">
+            <div class="message-bubble goose-bubble">
+              <div v-if="msg.loading" class="typing"><span></span><span></span><span></span></div>
+              <pre v-else class="message-text" :class="{ 'error-text': msg.isError }">{{ msg.content }}</pre>
+              <!-- Sources -->
+              <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
+                <div class="sources-label">Sources:</div>
+                <div class="sources-list">
+                  <a v-for="(src, sidx) in msg.sources" :key="sidx" :href="src" target="_blank" class="source-chip">
+                    {{ getHostname(src) }}
+                  </a>
+                </div>
+              </div>
+              <!-- Saved indicator -->
+              <div v-if="msg.saved_file" class="saved-indicator">💾 {{ msg.saved_file }}</div>
+            </div>
+            <div v-if="msg.role === 'assistant' && !msg.loading && msg.duration" class="message-duration">
+              {{ formatDuration(msg.duration) }}
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="goose-input-container"
+          :class="{ 'input-focused': isInputFocused }"
+          :style="inputContainerTop !== null ? { top: inputContainerTop + 'px', bottom: 'auto', transform: 'translateY(-100%)' } : {}"
+        >
+          <textarea
+            v-model="gooseInput"
+            @focus="onInputFocus($event)"
+            @blur="onInputBlur"
+            @keydown.enter.exact.prevent="sendGooseMessage"
+            :placeholder="gooseMode === 'research' ? 'Research topic...' : 'Ask anything...'"
+            rows="1"
+            inputmode="text"
+            autocomplete="off"
+            autocorrect="on"
+            autocapitalize="sentences"
+            class="goose-input"
+          ></textarea>
+          <button @click="sendGooseMessage" :disabled="gooseLoading || !gooseInput.trim()" class="send-btn goose">
+            <span v-if="gooseLoading">...</span>
             <span v-else>➤</span>
           </button>
         </div>
@@ -805,8 +1242,8 @@ watch(activeTab, (tab) => {
       </div>
     </main>
 
-    <!-- Bottom Navigation -->
-    <nav class="mobile-nav" :class="{ 'nav-hidden': isInputFocused }">
+    <!-- Bottom Navigation (hidden in Rick-only mode) -->
+    <nav v-if="!rickOnly" class="mobile-nav" :class="{ 'nav-hidden': isInputFocused }">
       <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id" :class="['nav-btn', { active: activeTab === tab.id }]">
         <span class="nav-icon">{{ tab.icon }}</span>
         <span class="nav-label">{{ tab.name }}</span>
@@ -841,7 +1278,7 @@ watch(activeTab, (tab) => {
 .mobile-header {
   flex-shrink: 0;
   background: #1f2937;
-  padding: calc(var(--sat, 0px) + 12px) 16px 12px;
+  padding: calc(var(--sat, 0px) + 6px) 12px 6px;
   border-bottom: 1px solid #374151;
 }
 
@@ -852,13 +1289,13 @@ watch(activeTab, (tab) => {
 }
 
 .app-title {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .status-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
 }
 
@@ -868,15 +1305,15 @@ watch(activeTab, (tab) => {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .refresh-btn {
   background: transparent;
   border: none;
   color: #6b7280;
-  font-size: 16px;
-  padding: 2px 6px;
+  font-size: 14px;
+  padding: 2px 4px;
   cursor: pointer;
   line-height: 1;
 }
@@ -1223,6 +1660,466 @@ watch(activeTab, (tab) => {
 }
 
 .send-btn.agent:disabled {
+  background: #4b5563;
+}
+
+/* Rick Tab (Family Assistant) */
+.rick-tab {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: calc(140px + var(--sab, 0px));
+}
+
+.rick-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.rick-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rick-version {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.rick-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rick-cost {
+  font-size: 11px;
+  color: #fb923c;
+  background: #431407;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.rick-badge {
+  background: #f97316;
+}
+
+.rick-session-picker {
+  background: #1f2937;
+}
+
+.rick-session-bar {
+  background: #431407;
+  border: 1px solid #7c2d12;
+}
+
+.rick-session-input {
+  color: #fb923c;
+}
+
+.rick-session-input:focus {
+  background: #431407;
+  border-color: #f97316;
+}
+
+.rick-id-badge {
+  background: #7c2d12;
+  color: #fb923c;
+}
+
+.rick-messages {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: 20px;
+}
+
+.rick-empty {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.rick-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.rick-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fb923c;
+  margin-bottom: 4px;
+}
+
+.rick-desc {
+  font-size: 13px;
+  color: #9ca3af;
+  margin-bottom: 20px;
+}
+
+.rick-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.rick-chip {
+  background: #431407;
+  border-color: #7c2d12;
+  color: #fb923c;
+}
+
+.rick-chip:active {
+  background: #7c2d12;
+}
+
+.rick-bubble {
+  background: #374151;
+}
+
+.message.user .rick-bubble {
+  background: #ea580c;
+}
+
+.rick-cursor {
+  color: #fb923c;
+}
+
+.rick-tools {
+  background: #431407;
+  color: #fb923c;
+}
+
+.rick-resume {
+  background: #431407;
+  border-color: #7c2d12;
+}
+
+.rick-input-container {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  background: #111827;
+  border-top: 1px solid #374151;
+  position: fixed;
+  bottom: calc(60px + var(--sab, 0px));
+  left: 0;
+  right: 0;
+  z-index: 10;
+}
+
+.rick-input-container.input-focused {
+  position: fixed;
+  z-index: 100;
+}
+
+.rick-input {
+  flex: 1;
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 20px;
+  padding: 12px 16px;
+  color: white;
+  font-size: 16px;
+  resize: none;
+  min-height: 44px;
+  max-height: 100px;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+}
+
+.rick-input:focus {
+  outline: none;
+  border-color: #f97316;
+}
+
+.send-btn.rick {
+  background: #ea580c;
+}
+
+.send-btn.rick:active {
+  background: #c2410c;
+}
+
+.send-btn.rick:disabled {
+  background: #4b5563;
+}
+
+/* Goose Tab */
+.goose-tab {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: calc(140px + var(--sab, 0px));
+}
+
+.goose-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.goose-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goose-version {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.goose-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-select-mini {
+  background: #374151;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: white;
+  font-size: 12px;
+  -webkit-appearance: none;
+}
+
+.research-btn {
+  position: relative;
+}
+
+.research-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #10b981;
+  color: white;
+  font-size: 10px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.research-list-mobile {
+  background: #1f2937;
+  border-radius: 12px;
+  margin: 8px 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.research-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #374151;
+  font-weight: 600;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.no-research {
+  padding: 24px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.research-items {
+  padding: 8px;
+}
+
+.research-file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.research-file-item:active,
+.research-file-item.active {
+  background: #374151;
+}
+
+.research-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.research-file-name {
+  font-size: 13px;
+  color: #e5e7eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.research-file-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.research-preview-mobile {
+  border-top: 1px solid #374151;
+  padding: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.research-preview-header {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-bottom: 8px;
+}
+
+.research-preview-content {
+  font-size: 11px;
+  color: #d1d5db;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.goose-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.goose-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 60px;
+}
+
+.goose-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.goose-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #d1d5db;
+  margin-bottom: 4px;
+}
+
+.goose-desc {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 16px;
+}
+
+.goose-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.goose-bubble {
+  background: #374151 !important;
+}
+
+.message.user .goose-bubble {
+  background: #059669 !important;
+}
+
+.message-sources {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #4b5563;
+}
+
+.sources-label {
+  font-size: 10px;
+  color: #9ca3af;
+  margin-bottom: 6px;
+}
+
+.sources-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-chip {
+  font-size: 10px;
+  color: #60a5fa;
+  background: #1e3a5f;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.saved-indicator {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #10b981;
+}
+
+.message-duration {
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 4px;
+  margin-left: 16px;
+}
+
+.goose-input-container {
+  position: fixed;
+  bottom: calc(70px + var(--sab, 0px));
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  background: #1f2937;
+  border-top: 1px solid #374151;
+  display: flex;
+  gap: 8px;
+  transition: transform 0.15s ease-out, top 0.15s ease-out, bottom 0.15s ease-out;
+  z-index: 100;
+}
+
+.goose-input-container.input-focused {
+  bottom: var(--sab, 0px);
+}
+
+.goose-input {
+  flex: 1;
+  background: #374151;
+  border: none;
+  border-radius: 20px;
+  padding: 12px 16px;
+  color: white;
+  font-size: 16px;
+  resize: none;
+  max-height: 100px;
+}
+
+.send-btn.goose {
+  background: #059669;
+}
+
+.send-btn.goose:disabled {
   background: #4b5563;
 }
 
@@ -2182,5 +3079,105 @@ watch(activeTab, (tab) => {
 :deep(.u-over),
 :deep(.u-under) {
   width: 100% !important;
+}
+
+/* Streaming and Resume styles for Agent */
+.typing-label {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.streaming-text {
+  display: inline;
+}
+
+.streaming-cursor {
+  display: inline;
+  animation: blink 1s infinite;
+  color: #60a5fa;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.message-meta-mobile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  margin-left: 16px;
+  flex-wrap: wrap;
+}
+
+.tools-badge {
+  font-size: 10px;
+  color: #a78bfa;
+  background: #2e1065;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.resume-banner-mobile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #422006;
+  border-top: 1px solid #854d0e;
+}
+
+.resume-text-mobile {
+  flex: 1;
+  font-size: 12px;
+  color: #fbbf24;
+}
+
+.resume-btn-mobile {
+  background: #d97706;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dismiss-btn-mobile {
+  background: transparent;
+  border: none;
+  color: #fbbf24;
+  font-size: 18px;
+  padding: 4px 8px;
+}
+
+.cancel-btn-mobile {
+  width: 44px;
+  height: 44px;
+  background: #dc2626;
+  border: none;
+  border-radius: 50%;
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Rick-only mode (no tab bar) */
+.rick-only-header {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+
+.rick-only-content .tab-content {
+  padding-bottom: 16px;
+}
+
+.rick-only-content .rick-tab {
+  padding-bottom: calc(80px + var(--sab, 0px));
 }
 </style>

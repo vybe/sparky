@@ -6,6 +6,56 @@
 
 ## Recent Changes
 
+### 2026-01-26 10:15:00
+📚 **Created missing feature flow documentation**
+- Added `rick-agent.md` - Family assistant agent using Claude Code with separate context
+- Added `mobile-pwa.md` - Mobile-optimized PWA interface with 8 tabs
+- Updated feature-flows.md index (now 10 documented flows)
+- Key files: `docs/memory/feature-flows/rick-agent.md`, `docs/memory/feature-flows/mobile-pwa.md`
+
+### 2026-01-26 09:54:00
+📎 **Added file upload support for Agent and Rick chats**
+- **Feature**: Upload images and PDFs to agents via drag & drop or file picker
+- Backend: New endpoints `/api/upload`, `/api/uploads/{agent}`, `/api/uploads/{agent}/{filename}`
+- Files stored in `~/agent-rick/uploads/` and `~/agent-sparky/uploads/`
+- Supported formats: jpg, jpeg, png, gif, webp, pdf (max 50MB)
+- Frontend: 📎 attachment button, drag & drop overlay, file preview thumbnails
+- File paths appended to message for agent context
+- Added `python-multipart` dependency for FastAPI file handling
+- Key files: `backend/main.py`, `src/components/RickChat.vue`, `src/components/AgentChat.vue`, `backend/requirements.txt`
+
+### 2026-01-26 09:30:00
+🔄 **Sessions now sorted by last usage**
+- Both Rick and Sparky (Agent) sessions sorted by `updated_at` descending
+- Most recently used sessions appear first in session picker
+- Key files: `src/components/RickChat.vue`, `src/components/AgentChat.vue`
+
+### 2026-01-11 23:30:00
+🔄 **Added streaming and resume for Agent Chat**
+- **Problem**: Long-running tasks would timeout (5 min) and show "Error" with no way to see results
+- **Solution**: Switched to SSE streaming with resume capability
+- Backend: New async streaming endpoint `/api/claude/chat/stream` with real-time events
+- Frontend: Real-time output display as Claude works, Cancel button during streaming
+- Resume: Banner appears on error/timeout to resume session and check results
+- Shows tool usage (🔧) and streaming cursor during generation
+- Updated both desktop (AgentChat.vue) and mobile (Mobile.vue, useAgent.js)
+- Key files: `backend/main.py`, `src/components/AgentChat.vue`, `src/components/Mobile.vue`, `src/composables/useAgent.js`
+
+### 2026-01-11 21:50:00
+🐛 **Fixed chart persistence on mobile tab switch**
+- Charts now re-initialize when switching back to Status tab
+- Historical data (CPU, Memory, GPU) preserved across tab switches
+- Added nextTick import and chart init in tab watcher
+- Key files: `src/components/Mobile.vue`
+
+### 2026-01-11 21:40:00
+📱 **Added Goose tab to mobile PWA**
+- Added Goose research agent tab to mobile navigation
+- Full functionality: chat, mode selection, research file management
+- Fixed network config bug (tailscale vs vpn naming mismatch)
+- Renamed desktop "Research" tab to "Goose" for consistency
+- Key files: `src/components/Mobile.vue`, `src/constants/mobileConstants.js`, `src/App.vue`
+
 ### 2026-01-11 14:45:00
 📚 **Created all feature flow documentation**
 - Documented 8 feature flows (chat, image-gen, video-gen, voice-chat, agent-chat, research-agent, container-management, telemetry)

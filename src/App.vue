@@ -9,6 +9,7 @@ import ActivityMonitor from './components/ActivityMonitor.vue'
 import Management from './components/Management.vue'
 import AgentChat from './components/AgentChat.vue'
 import GooseChat from './components/GooseChat.vue'
+import RickChat from './components/RickChat.vue'
 import Mobile from './components/Mobile.vue'
 
 // Check if mobile mode is requested via URL param or if on small screen
@@ -27,7 +28,8 @@ const activeTab = ref('dashboard')
 const tabs = [
   { id: 'dashboard', name: 'Overview', icon: '⚡' },
   { id: 'agent', name: 'Agent', icon: '🤖' },
-  { id: 'goose', name: 'Research', icon: '🪿' },
+  { id: 'rick', name: 'Rick', icon: '🧑‍💼' },
+  { id: 'goose', name: 'Goose', icon: '🪿' },
   { id: 'chat', name: 'Chat', icon: '💬' },
   { id: 'image', name: 'Image Gen', icon: '🎨' },
   { id: 'video', name: 'Video Gen', icon: '🎬' },
@@ -107,6 +109,9 @@ function toggleMode() {
       </keep-alive>
       <keep-alive>
         <AgentChat v-if="activeTab === 'agent'" />
+      </keep-alive>
+      <keep-alive>
+        <RickChat v-if="activeTab === 'rick'" />
       </keep-alive>
       <keep-alive>
         <GooseChat v-if="activeTab === 'goose'" />

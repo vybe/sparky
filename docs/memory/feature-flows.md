@@ -21,9 +21,11 @@
 | Video Generation | Documented | [`video-generation.md`](feature-flows/video-generation.md) | VideoGenerator.vue, useVideoGeneration.js |
 | Voice Chat | Documented | [`voice-chat.md`](feature-flows/voice-chat.md) | VoiceChat.vue |
 | Agent Chat | Documented | [`agent-chat.md`](feature-flows/agent-chat.md) | AgentChat.vue, useAgent.js |
+| Rick Agent | Documented | [`rick-agent.md`](feature-flows/rick-agent.md) | RickChat.vue, useRick.js |
 | Research Agent | Documented | [`research-agent.md`](feature-flows/research-agent.md) | GooseChat.vue, backend/main.py |
 | Container Management | Documented | [`container-management.md`](feature-flows/container-management.md) | Management.vue, useManagement.js, backend/main.py |
 | Telemetry | Documented | [`telemetry.md`](feature-flows/telemetry.md) | ActivityMonitor.vue, Telemetry.vue, useTelemetry.js |
+| Mobile PWA | Documented | [`mobile-pwa.md`](feature-flows/mobile-pwa.md) | Mobile.vue, mobileConstants.js, manifest.json, sw.js |
 
 ---
 
@@ -64,7 +66,7 @@ Upstream and downstream connections
 
 ## Documentation Complete
 
-All 8 features documented on 2026-01-11.
+All 10 features documented (updated 2026-01-26).
 
 ### Quick Reference
 
@@ -75,6 +77,8 @@ All 8 features documented on 2026-01-11.
 | Video Generation | ComfyUI | 11005 |
 | Voice Chat | Ultravox + Chatterbox | 11100, 11004 |
 | Agent Chat | Claude Code CLI | N/A |
+| Rick Agent | Claude Code CLI | N/A |
 | Research Agent | Goose CLI | N/A |
 | Container Management | FastAPI + Docker | /api |
 | Telemetry | Telemetry API + Ollama | 11006, 11434 |
+| Mobile PWA | All services (aggregates) | Multiple |

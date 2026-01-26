@@ -6,7 +6,7 @@ const messages = ref([])
 const inputMessage = ref('')
 const isLoading = ref(false)
 const sessionId = ref(null)
-const claudeStatus = ref(null)
+const rickStatus = ref(null)
 const totalCost = ref(0)
 const chatContainer = ref(null)
 
@@ -27,29 +27,20 @@ const isDragging = ref(false)
 const fileInputRef = ref(null)
 const isUploading = ref(false)
 
-// Tool presets for common operations
-const toolPresets = [
-  { name: 'Full Access', tools: null, desc: 'All tools enabled' },
-  { name: 'Read Only', tools: ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)'], desc: 'Can only read files' },
-  { name: 'Safe Bash', tools: ['Bash', 'Read', 'Write', 'Edit'], desc: 'Shell + file operations' },
-  { name: 'Research', tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'], desc: 'Search and read only' },
-]
-const selectedPreset = ref(toolPresets[0])
-
-// Check Claude Code status
+// Check Rick status
 async function checkStatus() {
   try {
-    const res = await fetch('/api/claude/status')
-    claudeStatus.value = await res.json()
+    const res = await fetch('/api/rick/status')
+    rickStatus.value = await res.json()
   } catch (e) {
-    claudeStatus.value = { available: false, error: e.message }
+    rickStatus.value = { available: false, error: e.message }
   }
 }
 
 // Load saved sessions
 async function loadSessions() {
   try {
-    const res = await fetch('/api/claude/sessions')
+    const res = await fetch('/api/rick/sessions')
     const data = await res.json()
     // Sort by updated_at descending (most recent first)
     const sessions = data.sessions || []
@@ -68,7 +59,7 @@ async function saveCurrentSession() {
   const firstMsg = messages.value.find(m => m.role === 'user')?.content || ''
 
   try {
-    await fetch('/api/claude/sessions', {
+    await fetch('/api/rick/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -95,7 +86,7 @@ async function loadSession(session) {
   // Add a system message indicating we resumed
   messages.value.push({
     role: 'assistant',
-    content: `📂 Resumed session: "${session.name}"\n\nOriginal prompt: ${session.first_message || '(none saved)'}\n\nYou can continue the conversation - Claude will remember the context.`,
+    content: `📂 Resumed session: "${session.name}"\n\nOriginal prompt: ${session.first_message || '(none saved)'}\n\nYou can continue the conversation - Rick will remember the context.`,
     isSystem: true
   })
 }
@@ -106,7 +97,7 @@ async function deleteSession(session, event) {
   if (!confirm(`Delete session "${session.name}"?`)) return
 
   try {
-    await fetch(`/api/claude/sessions/${session.session_id}`, { method: 'DELETE' })
+    await fetch(`/api/rick/sessions/${session.session_id}`, { method: 'DELETE' })
     await loadSessions()
   } catch (e) {
     console.error('Failed to delete session:', e)
@@ -147,14 +138,14 @@ async function sendMessage() {
     if (uploadedPaths.length > 0) {
       fileRefs = '\n\n[Attached files: ' + uploadedPaths.join(', ') + ']'
     }
-    pendingFiles.value = []
+    pendingFiles.value = [] // Clear pending files after upload
   }
 
   const fullMessage = userMessage + fileRefs
 
   // Add user message with file indicators
-  const userMsgContent = uploadedPaths.length > 0
-    ? userMessage + ` [${uploadedPaths.length} file(s) attached]`
+  const userMsgContent = pendingFiles.value.length > 0
+    ? userMessage + (uploadedPaths.length > 0 ? ` [${uploadedPaths.length} file(s) attached]` : '')
     : userMessage
   messages.value.push({ role: 'user', content: userMsgContent || '[Files attached]', files: uploadedPaths })
 
@@ -183,11 +174,10 @@ async function sendMessage() {
     const payload = {
       message: fullMessage || '[See attached files]',
       session_id: sessionId.value,
-      allowed_tools: selectedPreset.value.tools,
       files: uploadedPaths
     }
 
-    const res = await fetch('/api/claude/chat/stream', {
+    const res = await fetch('/api/rick/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -245,7 +235,7 @@ async function sendMessage() {
               break
 
             case 'tool_use':
-              // Claude is using a tool
+              // Rick is using a tool
               currentTool.value = event.tool
               if (!assistantMsg.tools.includes(event.tool)) {
                 assistantMsg.tools.push(event.tool)
@@ -406,6 +396,7 @@ function handleFileSelect(event) {
   if (files) {
     addFiles(Array.from(files))
   }
+  // Reset input so same file can be selected again
   if (fileInputRef.value) {
     fileInputRef.value.value = ''
   }
@@ -431,13 +422,16 @@ function handleDrop(event) {
 }
 
 function addFiles(files) {
+  // Filter for supported file types
   const supportedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
   const validFiles = files.filter(f => supportedTypes.includes(f.type))
 
   if (validFiles.length < files.length) {
-    console.warn(`${files.length - validFiles.length} file(s) rejected - only images and PDFs are supported`)
+    const rejected = files.length - validFiles.length
+    console.warn(`${rejected} file(s) rejected - only images and PDFs are supported`)
   }
 
+  // Add to pending files with preview
   for (const file of validFiles) {
     const fileObj = {
       file,
@@ -449,6 +443,7 @@ function addFiles(files) {
       uploadPath: null
     }
 
+    // Create preview for images
     if (file.type.startsWith('image/')) {
       const reader = new FileReader()
       reader.onload = (e) => {
@@ -480,7 +475,7 @@ async function uploadFiles() {
 
       const formData = new FormData()
       formData.append('file', fileObj.file)
-      formData.append('agent', 'sparky')
+      formData.append('agent', 'rick')
 
       const res = await fetch('/api/upload', {
         method: 'POST',
@@ -492,6 +487,8 @@ async function uploadFiles() {
         fileObj.uploaded = true
         fileObj.uploadPath = data.path
         uploadedPaths.push(data.path)
+      } else {
+        console.error('Upload failed for', fileObj.name)
       }
     }
   } finally {
@@ -525,16 +522,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="agent-chat">
+  <div class="rick-chat">
     <!-- Header -->
     <div class="chat-header">
       <div class="header-left">
-        <h2 class="text-lg font-semibold">Claude Code Agent</h2>
-        <div v-if="claudeStatus" class="status-indicator">
-          <span v-if="claudeStatus.available" class="status-dot online"></span>
+        <h2 class="text-lg font-semibold">Rick - Family Assistant</h2>
+        <div v-if="rickStatus" class="status-indicator">
+          <span v-if="rickStatus.available" class="status-dot online"></span>
           <span v-else class="status-dot offline"></span>
           <span class="text-xs text-gray-400">
-            {{ claudeStatus.available ? claudeStatus.version : 'Offline' }}
+            {{ rickStatus.available ? rickStatus.version : 'Offline' }}
           </span>
         </div>
       </div>
@@ -546,9 +543,6 @@ onUnmounted(() => {
           📂 Sessions
           <span v-if="savedSessions.length" class="session-count">{{ savedSessions.length }}</span>
         </button>
-        <select v-model="selectedPreset" class="preset-select">
-          <option v-for="p in toolPresets" :key="p.name" :value="p">{{ p.name }}</option>
-        </select>
         <button @click="clearChat" class="btn-clear" title="New chat">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
@@ -557,9 +551,9 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Preset description -->
+    <!-- Session info -->
     <div class="preset-info">
-      <span class="text-xs text-gray-500">{{ selectedPreset.desc }}</span>
+      <span class="text-xs text-gray-500">Family Documents & Personal Assistant</span>
       <div v-if="sessionId" class="session-info">
         <input
           v-model="sessionName"
@@ -604,21 +598,21 @@ onUnmounted(() => {
     <!-- Messages -->
     <div ref="chatContainer" class="messages-container">
       <div v-if="messages.length === 0" class="empty-state">
-        <div class="empty-icon">🤖</div>
-        <div class="empty-title">Claude Code Agent</div>
+        <div class="empty-icon">🧑‍💼</div>
+        <div class="empty-title">Rick - Family Assistant</div>
         <div class="empty-desc">
-          Send commands to Claude Code running on DGX.<br>
-          It has full access to manage the system.
+          Your personal assistant for family documents,<br>
+          personal information, and administrative tasks.
         </div>
         <div class="example-prompts">
-          <button @click="inputMessage = 'What containers are running?'" class="example-btn">
-            What containers are running?
+          <button @click="inputMessage = 'What documents are expiring soon?'" class="example-btn">
+            Documents expiring soon?
           </button>
-          <button @click="inputMessage = 'Show GPU and memory usage'" class="example-btn">
-            Show GPU and memory usage
+          <button @click="inputMessage = 'Show my Portuguese NIF number'" class="example-btn">
+            Show my NIF number
           </button>
-          <button @click="inputMessage = 'List files in ~/video-generation/'" class="example-btn">
-            List files in ~/video-generation/
+          <button @click="inputMessage = 'What is our current address?'" class="example-btn">
+            Current address?
           </button>
         </div>
       </div>
@@ -719,7 +713,7 @@ onUnmounted(() => {
       <textarea
         v-model="inputMessage"
         @keydown.enter.exact.prevent="sendMessage"
-        placeholder="Send a command to Claude Code..."
+        placeholder="Ask Rick about documents, dates, or personal info..."
         rows="2"
         inputmode="text"
         autocomplete="off"
@@ -749,7 +743,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.agent-chat {
+.rick-chat {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 200px);
@@ -808,15 +802,6 @@ onUnmounted(() => {
   border-radius: 6px;
 }
 
-.preset-select {
-  background: #374151;
-  border: 1px solid #4b5563;
-  border-radius: 6px;
-  padding: 6px 12px;
-  color: white;
-  font-size: 13px;
-}
-
 .btn-clear {
   background: #374151;
   border: none;
@@ -851,8 +836,8 @@ onUnmounted(() => {
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 2px 6px;
-  font-size: 16px; /* Minimum 16px prevents iOS Safari zoom */
-  color: #93c5fd;
+  font-size: 16px;
+  color: #f97316;
   width: 150px;
   touch-action: manipulation;
 }
@@ -863,8 +848,8 @@ onUnmounted(() => {
 
 .session-name-input:focus {
   outline: none;
-  border-color: #3b82f6;
-  background: #1e3a5f;
+  border-color: #f97316;
+  background: #431407;
 }
 
 .session-id {
@@ -891,7 +876,7 @@ onUnmounted(() => {
 }
 
 .session-count {
-  background: #3b82f6;
+  background: #f97316;
   color: white;
   font-size: 11px;
   padding: 1px 6px;
@@ -955,8 +940,8 @@ onUnmounted(() => {
 }
 
 .session-item.active {
-  background: #1e3a5f;
-  border: 1px solid #3b82f6;
+  background: #431407;
+  border: 1px solid #f97316;
 }
 
 .session-item-main {
@@ -1085,7 +1070,7 @@ onUnmounted(() => {
 }
 
 .message.user .message-content {
-  background: #2563eb;
+  background: #ea580c;
   border-bottom-right-radius: 4px;
 }
 
@@ -1160,15 +1145,15 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 12px 16px;
   color: white;
-  font-size: 16px; /* Minimum 16px prevents iOS Safari zoom on focus */
+  font-size: 16px;
   resize: none;
-  touch-action: manipulation; /* Prevents double-tap zoom */
-  -webkit-appearance: none; /* Removes iOS default styling */
+  touch-action: manipulation;
+  -webkit-appearance: none;
 }
 
 .message-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #f97316;
 }
 
 .message-input:disabled {
@@ -1176,7 +1161,7 @@ onUnmounted(() => {
 }
 
 .send-button {
-  background: #2563eb;
+  background: #ea580c;
   border: none;
   border-radius: 8px;
   padding: 12px 24px;
@@ -1189,7 +1174,7 @@ onUnmounted(() => {
 }
 
 .send-button:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: #c2410c;
 }
 
 .send-button:disabled {
@@ -1265,7 +1250,7 @@ onUnmounted(() => {
 .streaming-cursor {
   display: inline;
   animation: blink 1s infinite;
-  color: #60a5fa;
+  color: #fb923c;
 }
 
 @keyframes blink {
@@ -1275,8 +1260,8 @@ onUnmounted(() => {
 
 .tools-used {
   font-size: 11px;
-  color: #a78bfa;
-  background: #2e1065;
+  color: #fb923c;
+  background: #431407;
   padding: 2px 8px;
   border-radius: 4px;
   margin-right: 8px;

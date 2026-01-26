@@ -8,10 +8,12 @@ import subprocess
 import json
 import os
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import uuid
+import shutil
 import docker
 import psutil
 
@@ -79,16 +81,32 @@ class GooseChatRequest(BaseModel):
     mode: str = "chat"  # "chat" for quick Q&A, "research" for full research agent
 
 
-# Claude Code executable path
+# Claude Code executable path and Sparky agent directory
 CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
+SPARKY_WORKING_DIR = os.path.expanduser("~/agent-sparky")
 
 # Goose executable path and research directory
 GOOSE_PATH = os.path.expanduser("~/.local/bin/goose")
 GOOSE_RESEARCH_DIR = os.path.expanduser("~/goose-research")
 GOOSE_DATA_DIR = os.path.expanduser("~/goose-research/data")
 
-# Session storage file
+# Session storage files
 SESSIONS_FILE = os.path.expanduser("~/.dgx-web-ui-sessions.json")
+
+# Rick agent path and sessions (Family Assistant using agent-rick)
+RICK_SESSIONS_FILE = os.path.expanduser("~/.dgx-web-ui-rick-sessions.json")
+RICK_PATH = os.path.expanduser("~/.local/bin/claude")
+RICK_WORKING_DIR = os.path.expanduser("~/agent-rick")
+
+# Upload directories for agents
+UPLOAD_DIRS = {
+    "rick": os.path.expanduser("~/agent-rick/uploads"),
+    "sparky": os.path.expanduser("~/agent-sparky/uploads"),
+}
+
+# Ensure upload directories exist
+for upload_dir in UPLOAD_DIRS.values():
+    os.makedirs(upload_dir, exist_ok=True)
 
 
 def load_sessions() -> dict:
@@ -769,18 +787,135 @@ async def delete_session(session_id: str):
     return {"success": True, "deleted": session_id}
 
 
+# ============ File Upload ============
+
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf'}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+@app.post("/api/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    agent: str = Form(default="sparky")
+):
+    """Upload a file for an agent to access.
+
+    Files are stored in the agent's uploads directory and can be referenced
+    in prompts. Supports images (jpg, png, gif, webp) and PDFs.
+    """
+    # Validate agent
+    if agent not in UPLOAD_DIRS:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {agent}. Valid agents: {list(UPLOAD_DIRS.keys())}")
+
+    upload_dir = UPLOAD_DIRS[agent]
+
+    # Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    # Check file size by reading content
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)}MB")
+
+    # Generate unique filename
+    unique_id = str(uuid.uuid4())[:8]
+    safe_filename = f"{unique_id}_{file.filename.replace(' ', '_')}"
+    file_path = os.path.join(upload_dir, safe_filename)
+
+    # Save file
+    try:
+        with open(file_path, 'wb') as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    return {
+        "success": True,
+        "filename": safe_filename,
+        "path": file_path,
+        "size": len(content),
+        "agent": agent
+    }
+
+
+@app.get("/api/uploads/{agent}")
+async def list_uploads(agent: str):
+    """List uploaded files for an agent"""
+    if agent not in UPLOAD_DIRS:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {agent}")
+
+    upload_dir = UPLOAD_DIRS[agent]
+    files = []
+
+    if os.path.exists(upload_dir):
+        for filename in os.listdir(upload_dir):
+            filepath = os.path.join(upload_dir, filename)
+            if os.path.isfile(filepath):
+                stat = os.stat(filepath)
+                files.append({
+                    "name": filename,
+                    "path": filepath,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime
+                })
+        files.sort(key=lambda x: x["modified"], reverse=True)
+
+    return {"files": files, "agent": agent}
+
+
+@app.delete("/api/uploads/{agent}/{filename}")
+async def delete_upload(agent: str, filename: str):
+    """Delete an uploaded file"""
+    if agent not in UPLOAD_DIRS:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {agent}")
+
+    upload_dir = UPLOAD_DIRS[agent]
+    file_path = os.path.join(upload_dir, filename)
+
+    # Security check - ensure we're not deleting outside uploads dir
+    real_path = os.path.realpath(file_path)
+    if not real_path.startswith(os.path.realpath(upload_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        os.remove(file_path)
+        return {"success": True, "deleted": filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")
+
+
 @app.post("/api/claude/chat/stream")
 async def claude_chat_stream(request: ClaudeCodeRequest):
-    """Stream response from Claude Code (for future use)"""
-    # For now, just return a simple streaming response
-    # Real streaming would require --output-format stream-json
+    """Stream response from Claude Code using SSE.
+
+    Returns Server-Sent Events with the following event types:
+    - init: Initial event with basic info
+    - message: Claude's streaming text output
+    - tool_use: When Claude uses a tool
+    - result: Final result with session_id and cost
+    - error: If an error occurs
+    - done: Stream complete
+    """
     async def generate():
+        import time
+        start_time = time.time()
+        session_id = request.session_id
+        accumulated_text = []
+
         try:
             cmd = [
                 CLAUDE_PATH,
                 "-p", request.message,
                 "--output-format", "stream-json",
-                "--dangerously-skip-permissions"  # YOLO mode
+                "--verbose",  # Required when using stream-json with --print
+                "--dangerously-skip-permissions"  # YOLO mode - no approval needed
             ]
 
             if request.session_id:
@@ -789,25 +924,107 @@ async def claude_chat_stream(request: ClaudeCodeRequest):
             if request.allowed_tools:
                 cmd.extend(["--allowedTools", ",".join(request.allowed_tools)])
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+            # Send init event
+            yield f"data: {json.dumps({'type': 'init', 'message': 'Starting Claude Code...'})}\n\n"
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=SPARKY_WORKING_DIR,  # Run in agent-sparky directory for Sparky context
                 env={**os.environ, "PATH": f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '')}"}
             )
 
-            for line in process.stdout:
-                if line.strip():
-                    yield f"data: {line}\n\n"
+            # Read stdout line by line
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
 
-            process.wait()
-            yield "data: [DONE]\n\n"
+                line_text = line.decode('utf-8').strip()
+                if not line_text:
+                    continue
 
+                try:
+                    # Parse the stream-json event
+                    event = json.loads(line_text)
+                    event_type = event.get('type', 'unknown')
+
+                    # Extract session_id from any event that has it
+                    if 'session_id' in event and not session_id:
+                        session_id = event['session_id']
+
+                    # Handle different event types from Claude Code stream-json
+                    if event_type == 'assistant':
+                        # Assistant message with content
+                        message = event.get('message', {})
+                        content = message.get('content', [])
+                        for block in content:
+                            if block.get('type') == 'text':
+                                text = block.get('text', '')
+                                accumulated_text.append(text)
+                                yield f"data: {json.dumps({'type': 'message', 'text': text, 'session_id': session_id})}\n\n"
+                            elif block.get('type') == 'tool_use':
+                                tool_name = block.get('name', 'unknown')
+                                yield f"data: {json.dumps({'type': 'tool_use', 'tool': tool_name, 'session_id': session_id})}\n\n"
+
+                    elif event_type == 'result':
+                        # Final result event
+                        result_text = event.get('result', '')
+                        cost = event.get('total_cost_usd', 0)
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        final_session_id = event.get('session_id', session_id)
+
+                        yield f"data: {json.dumps({'type': 'result', 'result': result_text, 'session_id': final_session_id, 'cost_usd': cost, 'duration_ms': duration_ms})}\n\n"
+
+                    elif event_type == 'error':
+                        error_msg = event.get('error', {}).get('message', 'Unknown error')
+                        yield f"data: {json.dumps({'type': 'error', 'error': error_msg, 'session_id': session_id})}\n\n"
+
+                    elif event_type == 'system':
+                        # System messages (e.g., "Thinking...")
+                        system_msg = event.get('message', '')
+                        if system_msg:
+                            yield f"data: {json.dumps({'type': 'system', 'message': system_msg, 'session_id': session_id})}\n\n"
+
+                    else:
+                        # Forward other events as-is for debugging
+                        event['session_id'] = session_id
+                        yield f"data: {json.dumps(event)}\n\n"
+
+                except json.JSONDecodeError:
+                    # Not JSON, forward as raw text
+                    accumulated_text.append(line_text)
+                    yield f"data: {json.dumps({'type': 'message', 'text': line_text, 'session_id': session_id})}\n\n"
+
+            # Wait for process to complete
+            await process.wait()
+
+            # Check for errors in stderr
+            stderr_data = await process.stderr.read()
+            if process.returncode != 0 and stderr_data:
+                error_text = stderr_data.decode('utf-8').strip()
+                yield f"data: {json.dumps({'type': 'error', 'error': error_text, 'session_id': session_id})}\n\n"
+
+            # Send final done event
+            duration_ms = int((time.time() - start_time) * 1000)
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'duration_ms': duration_ms})}\n\n"
+
+        except asyncio.CancelledError:
+            # Client disconnected
+            yield f"data: {json.dumps({'type': 'cancelled', 'session_id': session_id})}\n\n"
         except Exception as e:
-            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'session_id': session_id})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
 
 
 # ============ Goose Research Agent Integration ============
@@ -991,6 +1208,312 @@ async def delete_research(filename: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Rick Agent Integration (Family Assistant) ============
+
+def load_rick_sessions() -> dict:
+    """Load saved Rick sessions from JSON file"""
+    if os.path.exists(RICK_SESSIONS_FILE):
+        try:
+            with open(RICK_SESSIONS_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {"sessions": []}
+    return {"sessions": []}
+
+
+def save_rick_sessions(data: dict):
+    """Save Rick sessions to JSON file"""
+    with open(RICK_SESSIONS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+@app.get("/api/rick/status")
+async def rick_status():
+    """Check if Rick agent is available"""
+    try:
+        result = subprocess.run(
+            [RICK_PATH, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return {
+                "available": True,
+                "version": result.stdout.strip(),
+                "path": RICK_PATH,
+                "working_dir": RICK_WORKING_DIR
+            }
+        return {"available": False, "error": result.stderr}
+    except FileNotFoundError:
+        return {"available": False, "error": "Claude Code not found"}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@app.get("/api/rick/sessions")
+async def list_rick_sessions():
+    """List all saved Rick sessions"""
+    data = load_rick_sessions()
+    return {"sessions": data.get("sessions", [])}
+
+
+@app.post("/api/rick/sessions")
+async def save_rick_session(request: SaveSessionRequest):
+    """Save or update a Rick session"""
+    from datetime import datetime
+
+    data = load_rick_sessions()
+    sessions = data.get("sessions", [])
+
+    existing = next((s for s in sessions if s["session_id"] == request.session_id), None)
+
+    if existing:
+        existing["name"] = request.name
+        existing["updated_at"] = datetime.now().isoformat()
+        if request.first_message:
+            existing["first_message"] = request.first_message
+    else:
+        sessions.append({
+            "session_id": request.session_id,
+            "name": request.name,
+            "first_message": request.first_message or "",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        })
+
+    data["sessions"] = sessions
+    save_rick_sessions(data)
+    return {"success": True, "session_id": request.session_id}
+
+
+@app.delete("/api/rick/sessions/{session_id}")
+async def delete_rick_session(session_id: str):
+    """Delete a saved Rick session"""
+    data = load_rick_sessions()
+    sessions = data.get("sessions", [])
+
+    original_count = len(sessions)
+    sessions = [s for s in sessions if s["session_id"] != session_id]
+
+    if len(sessions) == original_count:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    data["sessions"] = sessions
+    save_rick_sessions(data)
+    return {"success": True, "deleted": session_id}
+
+
+@app.post("/api/rick/chat/stream")
+async def rick_chat_stream(request: ClaudeCodeRequest):
+    """Stream response from Rick agent using SSE.
+
+    Rick runs Claude Code with the agent-rick working directory context,
+    giving it access to family documents and personal information.
+    """
+    async def generate():
+        import time
+        start_time = time.time()
+        session_id = request.session_id
+        accumulated_text = []
+
+        try:
+            cmd = [
+                RICK_PATH,
+                "-p", request.message,
+                "--output-format", "stream-json",
+                "--verbose",
+                "--dangerously-skip-permissions"
+            ]
+
+            if request.session_id:
+                cmd.extend(["--resume", request.session_id])
+
+            if request.allowed_tools:
+                cmd.extend(["--allowedTools", ",".join(request.allowed_tools)])
+
+            # Send init event
+            yield f"data: {json.dumps({'type': 'init', 'message': 'Starting Rick...'})}\n\n"
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=RICK_WORKING_DIR,  # Run in agent-rick directory for context
+                env={**os.environ, "PATH": f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '')}"}
+            )
+
+            # Read stdout line by line
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+
+                line_text = line.decode('utf-8').strip()
+                if not line_text:
+                    continue
+
+                try:
+                    event = json.loads(line_text)
+                    event_type = event.get('type', 'unknown')
+
+                    if 'session_id' in event and not session_id:
+                        session_id = event['session_id']
+
+                    if event_type == 'assistant':
+                        message = event.get('message', {})
+                        content = message.get('content', [])
+                        for block in content:
+                            if block.get('type') == 'text':
+                                text = block.get('text', '')
+                                accumulated_text.append(text)
+                                yield f"data: {json.dumps({'type': 'message', 'text': text, 'session_id': session_id})}\n\n"
+                            elif block.get('type') == 'tool_use':
+                                tool_name = block.get('name', 'unknown')
+                                yield f"data: {json.dumps({'type': 'tool_use', 'tool': tool_name, 'session_id': session_id})}\n\n"
+
+                    elif event_type == 'result':
+                        result_text = event.get('result', '')
+                        cost = event.get('total_cost_usd', 0)
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        final_session_id = event.get('session_id', session_id)
+
+                        yield f"data: {json.dumps({'type': 'result', 'result': result_text, 'session_id': final_session_id, 'cost_usd': cost, 'duration_ms': duration_ms})}\n\n"
+
+                    elif event_type == 'error':
+                        error_msg = event.get('error', {}).get('message', 'Unknown error')
+                        yield f"data: {json.dumps({'type': 'error', 'error': error_msg, 'session_id': session_id})}\n\n"
+
+                    elif event_type == 'system':
+                        system_msg = event.get('message', '')
+                        if system_msg:
+                            yield f"data: {json.dumps({'type': 'system', 'message': system_msg, 'session_id': session_id})}\n\n"
+
+                    else:
+                        event['session_id'] = session_id
+                        yield f"data: {json.dumps(event)}\n\n"
+
+                except json.JSONDecodeError:
+                    accumulated_text.append(line_text)
+                    yield f"data: {json.dumps({'type': 'message', 'text': line_text, 'session_id': session_id})}\n\n"
+
+            await process.wait()
+
+            stderr_data = await process.stderr.read()
+            if process.returncode != 0 and stderr_data:
+                error_text = stderr_data.decode('utf-8').strip()
+                yield f"data: {json.dumps({'type': 'error', 'error': error_text, 'session_id': session_id})}\n\n"
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'duration_ms': duration_ms})}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json.dumps({'type': 'cancelled', 'session_id': session_id})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'session_id': session_id})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+class SessionNameRequest(BaseModel):
+    first_message: str
+    session_id: str
+
+
+@app.post("/api/rick/name-session")
+async def rick_name_session(request: SessionNameRequest):
+    """Generate a meaningful name for a Rick session based on the first message."""
+    try:
+        # Use Claude to generate a short, meaningful session name
+        prompt = f'Name this conversation in 3-5 words (no quotes, no punctuation, just the name): "{request.first_message[:200]}"'
+
+        cmd = [
+            RICK_PATH,
+            "-p", prompt,
+            "--output-format", "json",
+            "--dangerously-skip-permissions"
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=RICK_WORKING_DIR,
+            env={**os.environ, "PATH": f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '')}"}
+        )
+
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+
+        if process.returncode == 0:
+            result = json.loads(stdout.decode('utf-8'))
+            name = result.get('result', '').strip()
+            # Clean up the name - remove quotes, limit length
+            name = name.strip('"\'').strip()[:50]
+            if name:
+                return {"success": True, "name": name}
+
+        # Fallback: use truncated first message
+        fallback = request.first_message[:30].strip()
+        if len(request.first_message) > 30:
+            fallback += "..."
+        return {"success": True, "name": fallback}
+
+    except asyncio.TimeoutError:
+        # Timeout - use fallback
+        fallback = request.first_message[:30].strip()
+        return {"success": True, "name": fallback}
+    except Exception as e:
+        return {"success": False, "error": str(e), "name": request.first_message[:30]}
+
+
+@app.post("/api/claude/name-session")
+async def claude_name_session(request: SessionNameRequest):
+    """Generate a meaningful name for a Sparky session based on the first message."""
+    try:
+        prompt = f'Name this conversation in 3-5 words (no quotes, no punctuation, just the name): "{request.first_message[:200]}"'
+
+        cmd = [
+            CLAUDE_PATH,
+            "-p", prompt,
+            "--output-format", "json",
+            "--dangerously-skip-permissions"
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=SPARKY_WORKING_DIR,
+            env={**os.environ, "PATH": f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '')}"}
+        )
+
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+
+        if process.returncode == 0:
+            result = json.loads(stdout.decode('utf-8'))
+            name = result.get('result', '').strip()
+            name = name.strip('"\'').strip()[:50]
+            if name:
+                return {"success": True, "name": name}
+
+        fallback = request.first_message[:30].strip()
+        if len(request.first_message) > 30:
+            fallback += "..."
+        return {"success": True, "name": fallback}
+
+    except asyncio.TimeoutError:
+        fallback = request.first_message[:30].strip()
+        return {"success": True, "name": fallback}
+    except Exception as e:
+        return {"success": False, "error": str(e), "name": request.first_message[:30]}
 
 
 if __name__ == "__main__":

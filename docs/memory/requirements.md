@@ -61,8 +61,20 @@
 - [x] Session save/load/resume
 - [x] Streaming responses
 - [x] Tool restriction options
+- [x] Sessions sorted by last usage
+- [x] File upload (images, PDFs) via drag & drop or picker
 
-### 7. Research Agent (Goose)
+### 7. Rick Agent (Family Assistant)
+**Status**: ✅ Complete
+**Priority**: Medium
+- [x] Claude Code integration with agent-rick context
+- [x] Session persistence (separate from Sparky)
+- [x] Session save/load/resume
+- [x] Streaming responses
+- [x] Sessions sorted by last usage
+- [x] File upload (images, PDFs) via drag & drop or picker
+
+### 8. Research Agent (Goose)
 **Status**: ✅ Complete
 **Priority**: Medium
 - [x] Goose CLI integration
@@ -71,7 +83,7 @@
 - [x] Saved research file listing
 - [x] Research content viewing
 
-### 8. Container Management
+### 9. Container Management
 **Status**: ✅ Complete
 **Priority**: High
 - [x] Container list with status
@@ -80,7 +92,7 @@
 - [x] Service health status
 - [x] Docker info display
 
-### 9. Telemetry/Activity Monitor
+### 10. Telemetry/Activity Monitor
 **Status**: ✅ Complete
 **Priority**: Medium
 - [x] GPU utilization display
@@ -89,7 +101,7 @@
 - [x] Disk space
 - [x] Real-time polling (1s interval)
 
-### 10. Mobile PWA
+### 11. Mobile PWA
 **Status**: ✅ Complete
 **Priority**: Medium
 - [x] Mobile-optimized layout

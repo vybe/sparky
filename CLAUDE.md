@@ -9,8 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **DGX Spark Web UI** — Vue 3 web interface for DGX Spark services (LLM chat, image/video generation, voice chat, container management).
 
 **Local URLs**:
-- Web UI: http://localhost:3000 (dev) / http://192.168.1.127:3080 (deployed)
-- Backend API: http://localhost:3081/docs
+- Web UI: http://localhost:3000 (dev) / http://${DGX_HOST}:3080 (deployed)
+- Backend API: http://${DGX_HOST}:3081/docs
 
 ---
 
@@ -41,7 +41,7 @@ After **EVERY** change, update:
 
 ### 5. Security First
 - Never expose credentials, API keys, or tokens in code or logs
-- Never commit the DGX password (kdr73hhe) or internal IPs
+- Never commit the DGX password or internal IPs
 - Use environment variables for all secrets
 - Run `/security-check` before every commit
 - Review diffs before committing for accidental sensitive data
